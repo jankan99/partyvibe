@@ -1,0 +1,1370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0b0d14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>PartyVibe</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+
+<!--
+╔══════════════════════════════════════════════════╗
+║  SUPABASE SETUP — 3 steps                        ║
+║                                                  ║
+║  1. Go to supabase.com → New Project             ║
+║  2. Run the SQL in the Setup Guide (⚙️ button)   ║
+║  3. Replace SUPABASE_URL and SUPABASE_ANON_KEY   ║
+║     below with your project's values            ║
+╚══════════════════════════════════════════════════╝
+-->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ── SUPABASE CONFIG ─────────────────────────────
+const SUPABASE_URL  = 'https://zkxajwmyffymzkwnmvvg.supabase.co';
+const SUPABASE_KEY  = 'sb_publishable_jDhqCshcUJQFpgiVbtuBrQ_v_6lLnaf';
+// ────────────────────────────────────────────────
+
+const LIVE = !SUPABASE_URL.includes('YOUR_');
+let _sb = null;
+
+if (LIVE) {
+  _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+}
+
+// ════════════════════════════════════════════════
+//  SB — Supabase / Demo bridge
+//  All Firebase-style ops reimplemented for Supabase
+// ════════════════════════════════════════════════
+const SB = {
+  live: LIVE,
+
+  // ── Events ──────────────────────────────────
+  async createEvent(data) {
+    if (!LIVE) { lsSet('ev_' + data.id, data); return data; }
+    const { error } = await _sb.from('events').insert(data);
+    if (error) throw error;
+    return data;
+  },
+
+  async getEvent(id) {
+    if (!LIVE) return lsGet('ev_' + id);
+    const { data, error } = await _sb.from('events').select('*').eq('id', id).single();
+    if (error) return null;
+    return data;
+  },
+
+  async updateEvent(id, updates) {
+    if (!LIVE) { const ev = lsGet('ev_' + id); lsSet('ev_' + id, {...ev, ...updates}); return; }
+    await _sb.from('events').update(updates).eq('id', id);
+  },
+
+  // ── Guests ──────────────────────────────────
+  async upsertGuest(data) {
+    if (!LIVE) {
+      const all = lsGet('guests_' + data.event_id) || {};
+      all[data.id] = data;
+      lsSet('guests_' + data.event_id, all);
+      return data;
+    }
+    const { error } = await _sb.from('guests').upsert(data);
+    if (error) throw error;
+    return data;
+  },
+
+  async getGuests(eventId) {
+    if (!LIVE) return Object.values(lsGet('guests_' + eventId) || {});
+    const { data } = await _sb.from('guests').select('*').eq('event_id', eventId).order('created_at');
+    return data || [];
+  },
+
+  listenGuests(eventId, cb) {
+    if (!LIVE) {
+      cb(Object.values(lsGet('guests_' + eventId) || {}));
+      return { unsubscribe: () => {} };
+    }
+    const ch = _sb.channel('guests_' + eventId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'guests', filter: `event_id=eq.${eventId}` },
+        async () => { const guests = await this.getGuests(eventId); cb(guests); })
+      .subscribe();
+    // initial load
+    this.getGuests(eventId).then(cb);
+    return { unsubscribe: () => _sb.removeChannel(ch) };
+  },
+
+  // ── Selfie upload to Supabase Storage ────────
+  async uploadSelfie(eventId, guestId, dataUrl) {
+    if (!LIVE) return dataUrl;
+    const blob = dataURLtoBlob(dataUrl);
+    const path = `${eventId}/selfies/${guestId}.jpg`;
+    const { error } = await _sb.storage.from('partyvibe').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+    if (error) throw error;
+    const { data } = _sb.storage.from('partyvibe').getPublicUrl(path);
+    return data.publicUrl;
+  },
+
+  // ── Quiz answers ─────────────────────────────
+  async upsertQuiz(data) {
+    if (!LIVE) {
+      const all = lsGet('quiz_' + data.event_id) || {};
+      all[data.guest_id] = data;
+      lsSet('quiz_' + data.event_id, all);
+      return;
+    }
+    await _sb.from('quiz_answers').upsert(data);
+  },
+
+  async getMatches(eventId, myAnswers, myGuestId) {
+    if (!LIVE) {
+      return [
+        { name: 'Alex', selfie_url: null, color: '#bf5fff', score: 87 },
+        { name: 'Jordan', selfie_url: null, color: '#ff5c94', score: 75 }
+      ];
+    }
+    const { data: rows } = await _sb
+      .from('quiz_answers')
+      .select('guest_id, answers')
+      .eq('event_id', eventId)
+      .neq('guest_id', myGuestId);
+
+    if (!rows) return [];
+    const scored = rows.map(r => {
+      let match = 0;
+      const b = r.answers;
+      for (let i = 0; i < 4; i++) if (myAnswers[i] === b[i]) match++;
+      return { guest_id: r.guest_id, score: Math.round(match / 4 * 100) };
+    }).filter(r => r.score >= 50).sort((a, b) => b.score - a.score).slice(0, 5);
+
+    const result = [];
+    for (const { guest_id, score } of scored) {
+      const { data: g } = await _sb.from('guests').select('*').eq('id', guest_id).single();
+      if (g) result.push({ ...g, score });
+    }
+    return result;
+  },
+
+  // ── Photos ───────────────────────────────────
+  async uploadPhoto(eventId, dataUrl) {
+    if (!LIVE || !dataUrl) return dataUrl;
+    const blob = dataURLtoBlob(dataUrl);
+    const path = `${eventId}/photos/${Date.now()}.jpg`;
+    const { error } = await _sb.storage.from('partyvibe').upload(path, blob, { contentType: 'image/jpeg' });
+    if (error) throw error;
+    const { data } = _sb.storage.from('partyvibe').getPublicUrl(path);
+    return data.publicUrl;
+  },
+
+  async insertPhoto(data) {
+    if (!LIVE) {
+      const arr = lsGet('photos_' + data.event_id) || [];
+      arr.unshift(data);
+      lsSet('photos_' + data.event_id, arr);
+      return data;
+    }
+    const { error } = await _sb.from('photos').insert(data);
+    if (error) throw error;
+    return data;
+  },
+
+  async getPhotos(eventId) {
+    if (!LIVE) return lsGet('photos_' + eventId) || DEMO_PHOTOS;
+    const { data } = await _sb.from('photos').select('*').eq('event_id', eventId).order('created_at', { ascending: false });
+    return data || [];
+  },
+
+  listenPhotos(eventId, cb) {
+    if (!LIVE) {
+      cb(lsGet('photos_' + eventId) || DEMO_PHOTOS);
+      return { unsubscribe: () => {} };
+    }
+    const ch = _sb.channel('photos_' + eventId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'photos', filter: `event_id=eq.${eventId}` },
+        async () => { const photos = await this.getPhotos(eventId); cb(photos); })
+      .subscribe();
+    this.getPhotos(eventId).then(cb);
+    return { unsubscribe: () => _sb.removeChannel(ch) };
+  },
+
+  async react(photoId, type) {
+    if (!LIVE) {
+      // Update demo data locally
+      ['photos_' + (App?.S?.eid || 'demo')].forEach(k => {
+        const arr = lsGet(k) || [];
+        const p = arr.find(x => x.id === photoId);
+        if (p) { p.reactions = p.reactions || {}; p.reactions[type] = (p.reactions[type] || 0) + 1; lsSet(k, arr); }
+      });
+      return;
+    }
+    // Use RPC for atomic increment
+    await _sb.rpc('increment_reaction', { photo_id: photoId, reaction_type: type });
+  },
+
+  // ── Purge ────────────────────────────────────
+  async purgeEvent(eventId) {
+    if (!LIVE) {
+      ['ev_', 'guests_', 'quiz_', 'photos_'].forEach(p => localStorage.removeItem(p + eventId));
+      return;
+    }
+    // Remove storage files
+    try {
+      const { data: files } = await _sb.storage.from('partyvibe').list(eventId + '/selfies');
+      const { data: pfiles } = await _sb.storage.from('partyvibe').list(eventId + '/photos');
+      const all = [...(files || []).map(f => `${eventId}/selfies/${f.name}`),
+                   ...(pfiles || []).map(f => `${eventId}/photos/${f.name}`)];
+      if (all.length) await _sb.storage.from('partyvibe').remove(all);
+    } catch (e) { console.warn('Storage purge:', e); }
+    await _sb.from('events').update({ purged: true, purged_at: new Date().toISOString() }).eq('id', eventId);
+    await _sb.from('guests').update({ selfie_url: null }).eq('event_id', eventId);
+  }
+};
+
+// ── Helpers ──────────────────────────────────
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) {} }
+function lsGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch(e) { return null; } }
+function uid() { return Math.random().toString(36).slice(2, 10); }
+function dataURLtoBlob(dataUrl) {
+  const [header, data] = dataUrl.split(',');
+  const mime = header.match(/:(.*?);/)[1];
+  const bin = atob(data);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+const DEMO_PHOTOS = [
+  { id: 'd1', emoji: '🕺', theme: 'Freeze in your best dance move!', hero_name: 'Marcus', photo_url: null, reactions: { heart: 5, fire: 3, laugh: 8, wow: 2 } },
+  { id: 'd2', emoji: '🦸', theme: 'Everyone pick a superhero pose!', hero_name: 'Priya', photo_url: null, reactions: { heart: 7, fire: 6, laugh: 2, wow: 4 } }
+];
+</script>
+
+<style>
+/* ════════════════════════════════════════════════
+   DESIGN SYSTEM — "Stitch"
+   Palette: near-black navy base, hot-pink neon as the
+   hero accent, warm gold as the secondary. Surfaces
+   are low-chroma slate with whisper-thin borders.
+   Type: Plus Jakarta Sans (display, bold & geometric)
+   + Inter (body, neutral & legible).
+   Signature: neon glow on hero titles + primary CTAs.
+   ════════════════════════════════════════════════ */
+:root {
+  --bg:   #0b0d14;
+  --bg2:  #11141d;
+  --bg3:  #181c28;
+  --card: #151823;
+  --ac:   #ff2e74;
+  --ac2:  #ff5fa2;
+  --ac3:  #5b8cff;
+  --gold: #ffc24b;
+  --tx:   #f5f6fa;
+  --mu:   #8b90a3;
+  --bd:   rgba(255,255,255,.08);
+  --glow: rgba(255,46,116,.45);
+  --r:    20px;
+  --rs:   14px;
+  --fh:   'Plus Jakarta Sans', sans-serif;
+  --fb:   'Inter', sans-serif;
+}
+
+/* ── HOST VIBES (chips) ── */
+.th-night    { --bg:#0b0d14;--bg2:#11141d;--bg3:#181c28;--card:#151823;--ac:#ff2e74;--ac2:#ff5fa2;--glow:rgba(255,46,116,.45); }   /* Neon Night */
+.th-sunset   { --bg:#120e07;--bg2:#1a140a;--bg3:#241a0c;--card:#191309;--ac:#ff9e2c;--ac2:#ffd24b;--glow:rgba(255,158,44,.42); }   /* Golden Hour */
+.th-tropical { --bg:#06140f;--bg2:#0a1d16;--bg3:#0e261d;--card:#0b1c15;--ac:#16d6a6;--ac2:#5be7c4;--glow:rgba(22,214,166,.4); }   /* Tropical */
+.th-ocean    { --bg:#0a0f1c;--bg2:#0f1626;--bg3:#152034;--card:#111a2c;--ac:#4d8cff;--ac2:#7fb0ff;--glow:rgba(77,140,255,.42); }   /* Chill */
+.th-rose     { --bg:#120a1c;--bg2:#1a0f28;--bg3:#241636;--card:#1a1228;--ac:#b76cff;--ac2:#ff6cae;--glow:rgba(183,108,255,.42); } /* Retro */
+/* legacy aliases kept so old saved events still resolve */
+.th-midnight { --bg:#0a0b14;--bg2:#11131d;--bg3:#181b28;--card:#141622;--ac:#7c6cff;--ac2:#ff6cb0;--glow:rgba(124,108,255,.42); }
+.th-classic  { --bg:#0b0d14;--bg2:#11141d;--bg3:#181c28;--card:#151823;--ac:#ff2e74;--ac2:#ff5fa2;--glow:rgba(255,46,116,.45); }
+
+* { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+html { scroll-behavior:smooth; }
+body { background:var(--bg); color:var(--tx); font-family:var(--fb); min-height:100vh; overflow-x:hidden; transition:background .4s,color .4s; -webkit-font-smoothing:antialiased; }
+h1,h2,h3,.fh { font-family:var(--fh); letter-spacing:-.01em; }
+.glow { text-shadow:0 0 24px var(--glow); }
+
+/* SCREENS */
+.scr { display:none; min-height:100vh; flex-direction:column; }
+.scr.on { display:flex; }
+
+/* BUTTONS */
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:16px 26px; border-radius:16px; border:none; cursor:pointer; font-family:var(--fh); font-size:15px; font-weight:700; transition:transform .15s,box-shadow .2s,filter .2s; letter-spacing:.01em; }
+.btn:active { transform:scale(.96); }
+.btn:disabled { opacity:.4; pointer-events:none; }
+.bp { background:linear-gradient(135deg,var(--ac),var(--ac2)); color:#fff; box-shadow:0 8px 30px -6px var(--glow),inset 0 1px 0 rgba(255,255,255,.25); }
+.bp:hover { box-shadow:0 12px 40px -6px var(--glow),inset 0 1px 0 rgba(255,255,255,.25); filter:brightness(1.05); }
+.bo { background:transparent; border:1.5px solid var(--ac); color:var(--ac); }
+.bo:hover { background:rgba(255,46,116,.08); box-shadow:0 6px 24px -10px var(--glow); }
+.bg2 { background:rgba(255,255,255,.05); color:var(--tx); border:1px solid var(--bd); }
+.bg2:hover { border-color:var(--ac); }
+.bgd { background:linear-gradient(135deg,var(--gold),#ff9a3c); color:#1a1000; font-weight:800; box-shadow:0 8px 30px -8px rgba(255,194,75,.5); }
+.bdn { background:rgba(255,70,70,.08); color:#ff6868; border:1px solid rgba(255,70,70,.28); }
+.fw { width:100%; }
+.bsm { padding:11px 18px; font-size:13px; border-radius:13px; }
+
+/* INPUTS */
+input,textarea,select { background:rgba(255,255,255,.04); border:1px solid var(--bd); border-radius:var(--rs); color:var(--tx); font-family:var(--fb); font-size:15px; padding:15px 16px; width:100%; outline:none; transition:border-color .2s,background .2s,box-shadow .2s; }
+input:focus,textarea:focus,select:focus { border-color:var(--ac); background:rgba(255,255,255,.06); box-shadow:0 0 0 4px var(--glow); box-shadow:0 0 0 3px rgba(255,46,116,.16); }
+input::placeholder,textarea::placeholder { color:var(--mu); }
+label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; letter-spacing:.08em; text-transform:uppercase; font-weight:600; }
+.fi { margin-bottom:18px; }
+.tag { display:inline-block; padding:5px 13px; border-radius:50px; font-size:12px; font-weight:600; background:rgba(255,46,116,.12); color:var(--ac); letter-spacing:.02em; }
+
+/* LAYOUT HELPERS */
+.shdr { padding:54px 22px 18px; }
+.shdr h2 { font-size:28px; font-weight:800; line-height:1.15; }
+.shdr p { color:var(--mu); margin-top:7px; font-size:14px; }
+.bkbtn { background:none; border:none; color:var(--mu); cursor:pointer; font-size:14px; padding:0; margin-bottom:14px; display:inline-flex; align-items:center; gap:5px; transition:color .2s; }
+.bkbtn:hover { color:var(--tx); }
+.fmbody { padding:22px; flex:1; overflow-y:auto; }
+.bbar { padding:18px 22px 34px; display:flex; flex-direction:column; gap:10px; }
+
+/* ── SPLASH ── */
+#s-splash { align-items:center; justify-content:center; text-align:center; background:radial-gradient(ellipse at 50% -10%,rgba(255,46,116,.22) 0%,transparent 55%), radial-gradient(ellipse at 85% 100%,rgba(91,140,255,.1) 0%,transparent 50%), var(--bg); }
+.spl-inner { padding:44px 30px; display:flex; flex-direction:column; align-items:center; gap:26px; max-width:380px; width:100%; }
+.logo-mark { width:88px; height:88px; border-radius:26px; background:linear-gradient(135deg,var(--ac),var(--ac2)); display:flex; align-items:center; justify-content:center; font-size:44px; box-shadow:0 0 50px var(--glow); animation:logopulse 3s ease-in-out infinite; }
+@keyframes logopulse { 0%,100%{box-shadow:0 0 50px var(--glow)} 50%{box-shadow:0 0 90px var(--glow)} }
+.logo-txt { font-size:42px; font-weight:800; letter-spacing:-1.5px; }
+.logo-txt span { color:var(--ac); text-shadow:0 0 28px var(--glow); }
+.tagline { color:var(--mu); font-size:15px; line-height:1.55; max-width:250px; }
+.spl-btns { display:flex; flex-direction:column; gap:11px; width:100%; }
+.sb-badge { display:inline-flex; align-items:center; gap:8px; padding:8px 16px; background:rgba(62,207,142,.08); border:1px solid rgba(62,207,142,.2); border-radius:50px; font-size:12px; color:#3ecf8e; }
+.sb-badge.demo { background:rgba(255,167,38,.08); border-color:rgba(255,167,38,.2); color:#ffb347; }
+
+/* ── HOST SETUP ── */
+.theme-grid { display:flex; flex-wrap:wrap; gap:9px; }
+.theme-sw { padding:10px 16px; border-radius:50px; cursor:pointer; border:1.5px solid var(--bd); background:var(--card); transition:all .2s; display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--mu); }
+.theme-sw::before { content:''; width:12px; height:12px; border-radius:50%; background:var(--sw,var(--ac)); box-shadow:0 0 8px var(--sw,var(--ac)); }
+.theme-sw:hover { border-color:var(--ac); color:var(--tx); }
+.theme-sw.on { border-color:transparent; background:linear-gradient(135deg,var(--ac),var(--ac2)); color:#fff; box-shadow:0 6px 22px -8px var(--glow); }
+.theme-sw.on::before { background:#fff; box-shadow:none; }
+.font-row { display:flex; gap:8px; flex-wrap:wrap; }
+.font-btn { padding:10px 16px; border-radius:50px; border:1.5px solid var(--bd); background:var(--card); color:var(--mu); cursor:pointer; font-size:13px; font-weight:600; transition:all .2s; }
+.font-btn:hover { border-color:var(--ac); color:var(--tx); }
+.font-btn.on { border-color:transparent; background:linear-gradient(135deg,var(--ac),var(--ac2)); color:#fff; box-shadow:0 6px 22px -8px var(--glow); }
+
+/* ── QR SCREEN ── */
+#s-qr { align-items:center; justify-content:flex-start; background:radial-gradient(ellipse at 50% -10%,rgba(255,46,116,.12),transparent 55%),var(--bg); padding:54px 22px 28px; text-align:center; gap:18px; overflow-y:auto; }
+.live-dot { display:inline-flex; align-items:center; gap:8px; color:#3ecf8e; font-size:14px; font-weight:600; }
+.live-dot::before { content:''; width:9px; height:9px; border-radius:50%; background:#3ecf8e; box-shadow:0 0 0 0 rgba(62,207,142,.6); animation:livepulse 1.8s ease-out infinite; }
+@keyframes livepulse { 0%{box-shadow:0 0 0 0 rgba(62,207,142,.5)} 100%{box-shadow:0 0 0 9px rgba(62,207,142,0)} }
+.qr-frame { background:#fff; border-radius:22px; padding:18px; box-shadow:0 0 70px -10px var(--glow); }
+.guest-chips { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; max-width:340px; }
+.g-chip { display:flex; align-items:center; gap:7px; background:var(--card); border:1px solid var(--bd); border-radius:50px; padding:4px 12px 4px 4px; font-size:13px; animation:chipin .3s ease; }
+@keyframes chipin { from{opacity:0;transform:scale(.8)} to{opacity:1;transform:scale(1)} }
+.miniav { width:26px; height:26px; border-radius:50%; object-fit:cover; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; }
+
+/* ── PARTY BANNER ── */
+.pbanner { padding:56px 22px 30px; text-align:center; position:relative; overflow:hidden; }
+.pbanner::before { content:''; position:absolute; inset:0; background:radial-gradient(ellipse at 50% -10%,var(--glow),transparent 55%); opacity:.5; }
+.pb-emoji { font-size:50px; display:block; margin-bottom:12px; position:relative; animation:bounce 2s ease-in-out infinite; }
+@keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-7px)} }
+.pb-title { font-size:38px; font-weight:800; position:relative; line-height:1.1; color:var(--ac); text-shadow:0 0 30px var(--glow); }
+.pb-sub { color:var(--tx); margin-top:10px; font-size:15px; position:relative; font-weight:500; }
+.pb-welcome { margin-top:13px; font-size:15px; color:var(--mu); line-height:1.55; position:relative; }
+.pb-collage { display:flex; gap:5px; justify-content:center; margin-top:22px; position:relative; }
+.pb-collage span { width:38px; height:54px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:22px; background:linear-gradient(160deg,var(--bg3),var(--card)); border:1px solid var(--bd); transform:rotate(var(--rot,0deg)); }
+
+/* ── SELFIE ── */
+.selfie-area { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:26px; gap:22px; }
+.selfie-ring { width:230px; height:230px; border-radius:24px; background:#000; overflow:hidden; position:relative; display:flex; align-items:center; justify-content:center; box-shadow:0 0 50px -10px var(--glow); }
+.selfie-ring video,.selfie-ring canvas { width:100%; height:100%; object-fit:cover; }
+.vf-corner { position:absolute; width:28px; height:28px; border:3px solid var(--ac); z-index:3; pointer-events:none; }
+.vf-corner.tl { top:12px; left:12px; border-right:0; border-bottom:0; border-radius:8px 0 0 0; }
+.vf-corner.tr { top:12px; right:12px; border-left:0; border-bottom:0; border-radius:0 8px 0 0; }
+.vf-corner.bl { bottom:12px; left:12px; border-right:0; border-top:0; border-radius:0 0 0 8px; }
+.vf-corner.br { bottom:12px; right:12px; border-left:0; border-top:0; border-radius:0 0 8px 0; }
+.privacy-note { background:rgba(91,140,255,.08); border:1px solid rgba(91,140,255,.2); border-radius:var(--rs); padding:11px 15px; font-size:12px; color:var(--ac3); line-height:1.6; max-width:290px; text-align:center; }
+.selfie-btns { display:flex; flex-direction:column; gap:10px; width:100%; max-width:300px; }
+
+/* ── GAMES ── */
+.games-body { padding:18px 18px 8px; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:14px; }
+.game-card { background:var(--card); border:1.5px solid var(--bd); border-radius:var(--r); padding:22px; cursor:pointer; transition:transform .2s,box-shadow .2s; display:flex; flex-direction:column; gap:8px; }
+.game-card:active { transform:scale(.99); }
+.game-card.pink { border-color:rgba(255,46,116,.55); box-shadow:0 0 30px -16px var(--glow); }
+.game-card.pink:hover { box-shadow:0 0 40px -12px var(--glow); }
+.game-card.gold { border-color:rgba(255,194,75,.5); box-shadow:0 0 30px -16px rgba(255,194,75,.4); }
+.game-card.gold:hover { box-shadow:0 0 40px -12px rgba(255,194,75,.45); }
+.game-card h3 { font-size:22px; font-weight:800; }
+.game-card.pink h3 { color:var(--ac); }
+.game-card.gold h3 { color:var(--gold); }
+.game-card p { color:var(--mu); font-size:14px; line-height:1.5; }
+.game-cta { margin-top:6px; align-self:flex-start; display:inline-flex; align-items:center; gap:6px; padding:11px 20px; border-radius:12px; font-family:var(--fh); font-weight:700; font-size:14px; }
+.game-card.pink .game-cta { background:linear-gradient(135deg,var(--ac),var(--ac2)); color:#fff; box-shadow:0 6px 20px -8px var(--glow); }
+.game-card.gold .game-cta { background:linear-gradient(135deg,var(--gold),#ff9a3c); color:#1a1000; }
+
+/* ── QUIZ ── */
+.quiz-hdr { padding:54px 22px 16px; }
+.prog-track { height:6px; background:rgba(255,255,255,.07); border-radius:6px; margin-top:14px; overflow:hidden; }
+.prog-fill { height:100%; background:linear-gradient(90deg,var(--ac),var(--ac2)); border-radius:6px; box-shadow:0 0 12px var(--glow); transition:width .4s cubic-bezier(.34,1.56,.64,1); }
+.quiz-body { padding:22px; flex:1; overflow-y:auto; }
+.quiz-q { font-size:25px; font-weight:800; line-height:1.25; margin-bottom:22px; font-family:var(--fh); }
+.opts { display:flex; flex-direction:column; gap:11px; }
+.opt { background:var(--card); border:1.5px solid var(--bd); border-radius:var(--rs); padding:17px 18px; text-align:left; color:var(--tx); cursor:pointer; font-family:var(--fb); font-size:15px; font-weight:500; transition:all .18s; display:flex; align-items:center; gap:13px; }
+.opt:hover { border-color:rgba(255,46,116,.45); }
+.opt.on { border-color:var(--ac); background:rgba(255,46,116,.12); box-shadow:0 0 0 3px rgba(255,46,116,.14); }
+.opt.on .chk { opacity:1; }
+.opt-em { font-size:23px; flex-shrink:0; }
+.chk { margin-left:auto; color:var(--ac); font-size:15px; font-weight:700; opacity:0; transition:opacity .2s; }
+
+/* ── MATCH ── */
+#s-match { align-items:center; background:radial-gradient(ellipse at 50% -5%,var(--glow),transparent 50%),var(--bg); overflow-y:auto; }
+.match-inner { padding:46px 22px 32px; display:flex; flex-direction:column; align-items:center; gap:18px; text-align:center; max-width:420px; width:100%; }
+.heart-wrap { position:relative; display:flex; align-items:center; justify-content:center; width:90px; height:90px; }
+.pring { width:90px; height:90px; border-radius:50%; border:2px solid var(--ac); position:absolute; opacity:0; animation:pring 2s ease-out infinite; }
+.pring:nth-child(2) { animation-delay:.5s; }
+@keyframes pring { 0%{opacity:.7;transform:scale(.4)} 100%{opacity:0;transform:scale(2)} }
+.match-title { font-size:32px; font-weight:800; font-family:var(--fh); line-height:1.1; }
+.match-grid { display:flex; flex-direction:column; gap:12px; width:100%; }
+.mperson { display:flex; flex-direction:row; align-items:center; gap:14px; text-align:left; background:var(--card); border:1px solid var(--bd); border-radius:var(--r); padding:14px 16px; }
+.mav { width:56px; height:56px; border-radius:50%; border:2px solid var(--ac); overflow:hidden; background:var(--bg3); display:flex; align-items:center; justify-content:center; font-size:20px; font-weight:700; flex-shrink:0; box-shadow:0 0 16px -4px var(--glow); }
+.mav img { width:100%; height:100%; object-fit:cover; }
+.mname { font-weight:700; font-size:16px; font-family:var(--fh); }
+.mscore { font-size:13px; color:var(--ac); font-weight:600; margin-top:2px; }
+.shared-box { background:var(--card); border:1px solid var(--bd); border-radius:var(--r); padding:16px 18px; text-align:left; width:100%; }
+
+/* ── HERO / PHOTO CHALLENGE ── */
+.hero-body { padding:22px; flex:1; display:flex; flex-direction:column; justify-content:center; gap:18px; overflow-y:auto; }
+.theme-card { background:var(--card); border:1px solid var(--bd); border-radius:var(--r); padding:30px 24px; text-align:left; }
+.theme-emoji { font-size:46px; display:block; margin-bottom:14px; }
+.theme-lbl { display:inline-block; font-size:11px; color:#1a1000; background:linear-gradient(135deg,var(--gold),#ff9a3c); letter-spacing:.1em; text-transform:uppercase; font-weight:800; margin-bottom:14px; padding:5px 12px; border-radius:50px; }
+.theme-txt { font-size:28px; font-weight:800; line-height:1.2; font-family:var(--fh); }
+.countdown { font-size:48px; font-weight:800; font-family:var(--fh); color:var(--ac); text-align:center; line-height:1; transition:color .3s; }
+.countdown.urgent { color:var(--ac2); animation:urgp .6s ease-in-out infinite; }
+@keyframes urgp { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
+
+/* ── CAMERA ── */
+#s-camera { background:#000; }
+.cam-view { width:100%; height:62vh; position:relative; overflow:hidden; flex-shrink:0; }
+.cam-view video { width:100%; height:100%; object-fit:cover; display:block; }
+.cam-view canvas { width:100%; height:100%; object-fit:cover; display:none; position:absolute; inset:0; }
+.cam-badge { position:absolute; top:18px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.72); backdrop-filter:blur(12px); border-radius:50px; padding:10px 18px; z-index:2; font-family:var(--fh); font-weight:700; font-size:13px; color:#fff; max-width:285px; text-align:center; line-height:1.4; border:1px solid rgba(255,255,255,.13); }
+.cam-ctrls { flex:1; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:17px; padding:22px 22px 34px; }
+.shutter { width:74px; height:74px; border-radius:50%; background:#fff; border:5px solid rgba(255,255,255,.32); cursor:pointer; transition:transform .15s; box-shadow:0 0 0 8px rgba(255,255,255,.1),0 0 40px -4px var(--glow); flex-shrink:0; }
+.shutter:active { transform:scale(.87); }
+.preview-btns { display:flex; gap:13px; }
+
+/* ── GALLERY ── */
+.gal-hdr { padding:50px 22px 16px; background:linear-gradient(135deg,var(--ac),var(--ac2)); }
+.gal-hdr h2 { color:#fff; }
+.gal-hdr .bkbtn { color:rgba(255,255,255,.85); }
+.gal-hdr #gal-count { color:rgba(255,255,255,.85)!important; }
+.gal-grid { padding:13px; display:grid; grid-template-columns:1fr 1fr; gap:11px; align-content:start; flex:1; overflow-y:auto; }
+.gal-item { position:relative; border-radius:var(--r); overflow:hidden; background:var(--card); border:1px solid var(--bd); }
+.gal-item img { width:100%; height:170px; object-fit:cover; display:block; }
+.gal-ph { width:100%; height:170px; display:flex; align-items:center; justify-content:center; font-size:46px; background:linear-gradient(135deg,var(--bg3),var(--card)); }
+.gal-cap { position:absolute; left:0; right:0; bottom:38px; padding:22px 10px 8px; background:linear-gradient(180deg,transparent,rgba(0,0,0,.82)); pointer-events:none; }
+.gal-hero { font-weight:700; color:#fff; font-size:13px; font-family:var(--fh); }
+.gal-theme { font-size:11px; color:var(--ac2); margin-top:2px; line-height:1.3; font-weight:600; }
+.reacts { display:flex; gap:2px; padding:7px 6px; background:var(--card); }
+.rbtn { background:none; border:none; cursor:pointer; font-size:13px; padding:3px 4px; border-radius:7px; display:flex; align-items:center; gap:2px; transition:transform .15s; }
+.rbtn:active { transform:scale(1.4); }
+.rcnt { font-size:11px; color:var(--mu); font-family:var(--fb); }
+
+/* ── HOST PANEL ── */
+.hp-body { padding:14px; flex:1; overflow-y:auto; }
+.guest-row { display:flex; align-items:center; gap:11px; padding:12px 13px; background:var(--card); border-radius:var(--rs); border:1px solid var(--bd); margin-bottom:8px; }
+.gav { width:40px; height:40px; border-radius:50%; object-fit:cover; border:2px solid var(--bd); }
+
+/* ── NAV BAR ── */
+.navb { display:flex; background:var(--bg2); border-top:1px solid var(--bd); padding:8px 0 22px; flex-shrink:0; }
+.nitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; background:none; border:none; cursor:pointer; color:var(--mu); padding:7px 4px; transition:color .2s; }
+.nitem.on { color:var(--ac); }
+.nico { font-size:19px; }
+.nlbl { font-size:10px; letter-spacing:.04em; font-family:var(--fb); font-weight:600; }
+
+/* ── TOAST ── */
+.toast { position:fixed; top:16px; left:50%; transform:translateX(-50%); background:var(--bg2); border:1px solid var(--ac); border-radius:50px; padding:11px 20px; font-size:14px; font-weight:500; z-index:9999; white-space:nowrap; max-width:92vw; box-shadow:0 8px 30px -8px var(--glow); animation:tin .3s ease,tout .3s 2.7s ease forwards; font-family:var(--fb); }
+@keyframes tin { from{opacity:0;transform:translateX(-50%) translateY(-14px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+@keyframes tout { to{opacity:0} }
+
+/* ── LOADING ── */
+.ldov { position:fixed; inset:0; background:rgba(6,8,14,.85); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px; z-index:8888; }
+.spnr { width:42px; height:42px; border:3px solid rgba(255,255,255,.12); border-top-color:var(--ac); border-radius:50%; animation:spin .8s linear infinite; box-shadow:0 0 24px -6px var(--glow); }
+@keyframes spin { to{transform:rotate(360deg)} }
+
+/* ── CONFETTI ── */
+.cfwrap { position:fixed; inset:0; pointer-events:none; z-index:7777; overflow:hidden; }
+.cfp { position:absolute; top:-10px; border-radius:2px; animation:cfall linear forwards; }
+@keyframes cfall { to{transform:translateY(110vh) rotate(800deg);opacity:0} }
+
+/* ── MODAL ── */
+.modov { position:fixed; inset:0; background:rgba(0,0,0,.7); backdrop-filter:blur(6px); display:flex; align-items:flex-end; justify-content:center; z-index:6666; }
+.modsh { background:var(--bg2); border-radius:26px 26px 0 0; padding:26px 22px 38px; width:100%; max-width:460px; border:1px solid var(--bd); border-bottom:none; animation:shup .3s cubic-bezier(.34,1.56,.64,1); }
+@keyframes shup { from{transform:translateY(100%)} to{transform:translateY(0)} }
+.modh { width:38px; height:4px; background:var(--bd); border-radius:4px; margin:0 auto 18px; }
+
+/* STARS */
+.stars-bg { position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden; }
+.star { position:absolute; border-radius:50%; background:#fff; opacity:0; animation:twk linear infinite; }
+@keyframes twk { 0%,100%{opacity:0} 50%{opacity:.38} }
+.scr>* { position:relative; z-index:1; }
+
+::-webkit-scrollbar { width:4px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--bd); border-radius:4px; }
+@media(min-width:480px) { .scr{max-width:480px;margin:0 auto;} body{background:#06080e;} }
+</style>
+</head>
+<body>
+<div class="stars-bg" id="stars-bg"></div>
+
+<!-- ══════ SPLASH ══════ -->
+<div class="scr on" id="s-splash">
+  <div class="spl-inner">
+    <div class="logo-mark">🎉</div>
+    <div>
+      <h1 class="logo-txt">Party<span>Vibe</span></h1>
+      <p class="tagline">Where strangers become friends — one vibe at a time.</p>
+    </div>
+    <div id="sb-status" class="sb-badge demo">⚙️ Demo mode — add Supabase config to go live</div>
+    <div class="spl-btns">
+      <button class="btn bp fw" onclick="App.go('s-host')">🎪 Host a Gathering</button>
+      <button class="btn bo fw" onclick="App.joinFlow()">📱 Join with QR Code</button>
+    </div>
+    <p style="color:var(--mu);font-size:12px">No app download · No account needed</p>
+  </div>
+</div>
+
+<!-- ══════ HOST SETUP ══════ -->
+<div class="scr" id="s-host">
+  <div class="shdr">
+    <button class="bkbtn" onclick="App.go('s-splash')">← Back</button>
+    <h2 class="glow">Create Your Party</h2>
+    <p>Set it up once. Your guests do the rest.</p>
+  </div>
+  <div class="fmbody">
+    <div class="fi"><label>Party Name</label><input id="h-pname" value="Sarah's Rooftop Fiesta" placeholder="e.g. Game Night 🎮"></div>
+    <div class="fi"><label>Host Name</label><input id="h-hname" value="Sarah" placeholder="Your name"></div>
+    <div class="fi"><label>Vibe / Theme</label><input id="h-vibe" value="Tropical Summer Night" placeholder="e.g. 80s Retro, Chill Sunday"></div>
+    <div class="fi">
+      <label>Party Emoji</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px" id="emoji-pick">
+        <button class="font-btn on" onclick="App.pickEmoji(this,'🌴')">🌴</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🎉')">🎉</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🔥')">🔥</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🌊')">🌊</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🎶')">🎶</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🍹')">🍹</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'✨')">✨</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🚀')">🚀</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🎸')">🎸</button>
+        <button class="font-btn" onclick="App.pickEmoji(this,'🌸')">🌸</button>
+      </div>
+    </div>
+    <div class="fi"><label>Welcome Message</label><textarea id="h-welcome" rows="2">Hey! So glad you're here. Let's get to know each other 🥂</textarea></div>
+    <div class="fi">
+      <label>Party Vibe</label>
+      <div class="theme-grid" id="theme-pick">
+        <div class="theme-sw on" style="--sw:#ff2e74" data-t="th-night" onclick="App.pickTheme(this,'th-night')">Neon Night</div>
+        <div class="theme-sw" style="--sw:#ff9e2c" data-t="th-sunset" onclick="App.pickTheme(this,'th-sunset')">Golden Hour</div>
+        <div class="theme-sw" style="--sw:#16d6a6" data-t="th-tropical" onclick="App.pickTheme(this,'th-tropical')">Tropical</div>
+        <div class="theme-sw" style="--sw:#4d8cff" data-t="th-ocean" onclick="App.pickTheme(this,'th-ocean')">Chill</div>
+        <div class="theme-sw" style="--sw:#b76cff" data-t="th-rose" onclick="App.pickTheme(this,'th-rose')">Retro</div>
+      </div>
+    </div>
+    <div class="fi">
+      <label>Heading Font</label>
+      <div class="font-row" id="font-pick">
+        <button class="font-btn on" style="font-family:'Plus Jakarta Sans',sans-serif" onclick="App.pickFont(this,'Plus Jakarta Sans')">Jakarta</button>
+        <button class="font-btn" style="font-family:'Syne',sans-serif" onclick="App.pickFont(this,'Syne')">Syne</button>
+        <button class="font-btn" style="font-family:'Georgia',serif" onclick="App.pickFont(this,'Georgia')">Georgia</button>
+        <button class="font-btn" style="font-family:'Courier New',monospace" onclick="App.pickFont(this,'Mono')">Mono</button>
+        <button class="font-btn" style="font-family:'Trebuchet MS',sans-serif" onclick="App.pickFont(this,'Trebuchet MS')">Trebuchet</button>
+      </div>
+    </div>
+  </div>
+  <div class="bbar"><button class="btn bp fw" onclick="App.activate()">Launch Party →</button></div>
+</div>
+
+<!-- ══════ QR SCREEN ══════ -->
+<div class="scr" id="s-qr">
+  <h2 id="qr-title" style="font-size:30px;font-weight:800">Party</h2>
+  <div class="live-dot">Your party is live</div>
+  <div class="qr-frame"><canvas id="qr-canvas" width="200" height="200"></canvas></div>
+  <button class="btn bg2 bsm" onclick="App.copyLink()">🔗 Copy Link</button>
+  <div style="background:var(--card);border:1px solid var(--bd);border-radius:var(--rs);padding:9px 16px;font-size:12px;color:var(--mu)" id="eid-label">Event ID: —</div>
+  <div>
+    <div style="font-size:14px;color:var(--mu);margin-bottom:10px"><strong id="guest-count" style="color:var(--tx)">0</strong> guests joined</div>
+    <div class="guest-chips" id="guest-chips"></div>
+  </div>
+  <button class="btn bo bsm" onclick="App.go('s-hostpanel')">Open Host Panel →</button>
+</div>
+
+<!-- ══════ HOST PANEL ══════ -->
+<div class="scr" id="s-hostpanel">
+  <div class="shdr">
+    <button class="bkbtn" onclick="App.go('s-qr')">← QR Code</button>
+    <h2>Host Panel</h2>
+    <p id="hp-sub">Managing your event</p>
+  </div>
+  <div class="hp-body" id="hp-glist"><p style="color:var(--mu);font-size:14px">No guests yet...</p></div>
+  <div class="bbar">
+    <button class="btn bg2 fw" onclick="App.go('s-gallery');App.listenGallery()">📸 Memory Gallery</button>
+    <button class="btn bdn fw" onclick="App.confirmPurge()">🔒 End Event & Purge All Data</button>
+  </div>
+</div>
+
+<!-- ══════ GUEST JOIN ══════ -->
+<div class="scr" id="s-join">
+  <div class="pbanner">
+    <span class="pb-emoji" id="pb-emoji">🌴</span>
+    <h2 class="pb-title" id="pb-title">Party</h2>
+    <p class="pb-sub" id="pb-sub">Hosted by · </p>
+    <p class="pb-welcome" id="pb-welcome">Welcome!</p>
+    <div class="pb-collage">
+      <span style="--rot:-6deg">🎉</span><span style="--rot:3deg">🥂</span>
+      <span style="--rot:-2deg">💃</span><span style="--rot:5deg">🕺</span>
+      <span style="--rot:-4deg">✨</span>
+    </div>
+  </div>
+  <div class="fmbody">
+    <div class="fi" style="margin-top:6px">
+      <label>What do we call you tonight?</label>
+      <input id="guest-name" placeholder="First name or a fun nickname" autocomplete="off">
+    </div>
+  </div>
+  <div class="bbar"><button class="btn bp fw" onclick="App.guestNext()">That's Me →</button></div>
+</div>
+
+<!-- ══════ SELFIE ══════ -->
+<div class="scr" id="s-selfie">
+  <div class="shdr" style="text-align:center"><h2>Take a Selfie 🤳</h2><p>Photo may be deleted after the event</p></div>
+  <div class="selfie-area">
+    <div class="selfie-ring" id="selfie-ring">
+      <span class="vf-corner tl"></span><span class="vf-corner tr"></span>
+      <span class="vf-corner bl"></span><span class="vf-corner br"></span>
+      <span id="selfie-ph" style="font-size:54px">📷</span>
+      <video id="selfie-vid" autoplay playsinline style="display:none"></video>
+      <canvas id="selfie-cv" style="display:none"></canvas>
+    </div>
+    <div class="privacy-note">🔒 Only shown to your matches. Purged when the event ends.</div>
+    <div id="selfie-b1" class="selfie-btns">
+      <button class="btn bp fw" onclick="App.startSelfie()">📷 Open Camera</button>
+      <button class="btn bo fw" onclick="App.skipSelfie()">Skip — use initials avatar</button>
+    </div>
+    <div id="selfie-b2" class="selfie-btns" style="display:none">
+      <button class="btn bp fw" onclick="App.snapSelfie()">✓ Take Photo</button>
+      <button class="btn bo fw" onclick="App.retakeSelfie()">↩ Retake</button>
+    </div>
+    <div id="selfie-b3" class="selfie-btns" style="display:none">
+      <button class="btn bp fw" onclick="App.acceptSelfie()">Looks good! Continue →</button>
+      <button class="btn bo fw" onclick="App.retakeSelfie()">↩ Retake</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ GAMES LOBBY ══════ -->
+<div class="scr" id="s-games">
+  <div class="shdr" style="padding-top:54px">
+    <h2>Choose Your Game</h2>
+    <p>Hey <span id="g-name" style="color:var(--ac);font-weight:600">friend</span> — pick how you want to connect tonight</p>
+  </div>
+  <div class="games-body">
+    <div class="game-card pink" onclick="App.startQuiz()">
+      <h3>Find Your People</h3>
+      <p>4 quick questions. Meet guests who think like you.</p>
+      <span class="game-cta">Play Quiz →</span>
+    </div>
+    <div class="game-card gold" onclick="App.startHero()">
+      <h3>Make a Memory</h3>
+      <p>Get a challenge. Take one shot. Go famous.</p>
+      <span class="game-cta">Play →</span>
+    </div>
+    <button class="btn bg2 fw" onclick="App.go('s-gallery');App.listenGallery()">🖼️ View Party Gallery</button>
+  </div>
+  <div class="navb">
+    <button class="nitem on" onclick="App.go('s-games')"><span class="nico">🎮</span><span class="nlbl">Games</span></button>
+    <button class="nitem" onclick="App.go('s-gallery');App.listenGallery()"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
+    <button class="nitem" onclick="App.go('s-match')"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
+  </div>
+</div>
+
+<!-- ══════ QUIZ ══════ -->
+<div class="scr" id="s-quiz">
+  <div class="quiz-hdr">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:14px;color:var(--ac);font-weight:600">Question <span id="q-num">1</span> of 4</span>
+      <span class="tag">Hot Takes 🌶️</span>
+    </div>
+    <div class="prog-track"><div class="prog-fill" id="q-bar" style="width:25%"></div></div>
+  </div>
+  <div class="quiz-body">
+    <p class="quiz-q" id="q-text">Loading...</p>
+    <div class="opts" id="q-opts"></div>
+  </div>
+  <div class="bbar"><button class="btn bp fw" id="q-next" disabled onclick="App.qNext()">Next →</button></div>
+</div>
+
+<!-- ══════ MATCH RESULT ══════ -->
+<div class="scr" id="s-match">
+  <div class="match-inner">
+    <div class="heart-wrap">
+      <div class="pring"></div><div class="pring"></div>
+      <span style="font-size:50px;position:relative">💜</span>
+    </div>
+    <h2 class="match-title glow">You found<br>your people</h2>
+    <p id="match-sub" style="color:var(--mu);font-size:14px">Finding your matches...</p>
+    <div class="match-grid" id="match-grid"></div>
+    <div class="shared-box" id="shared-box" style="display:none">
+      <p style="font-size:11px;color:var(--mu);margin-bottom:7px;text-transform:uppercase;letter-spacing:.08em;font-weight:600">Shared vibes 🌶️</p>
+      <div id="shared-ans" style="font-size:14px;line-height:1.9"></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;width:100%">
+      <button class="btn bo fw" onclick="App.startHero()">Make a Memory →</button>
+      <button class="btn bg2 fw" onclick="App.startQuiz()">🔄 Play again</button>
+      <button class="btn bg2 fw" onclick="App.go('s-games')">← Back to games</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ MEMORY HERO ══════ -->
+<div class="scr" id="s-hero">
+  <div class="shdr">
+    <button class="bkbtn" onclick="App.cancelHero()">← Back</button>
+  </div>
+  <div class="hero-body">
+    <div class="theme-card">
+      <span class="theme-emoji" id="h-emoji">🏆</span>
+      <span class="theme-lbl">Your Challenge</span>
+      <p class="theme-txt" id="h-theme">You all just won $1 million — react!</p>
+      <p style="color:var(--mu);font-size:15px;line-height:1.5;margin-top:14px">You have ONE shot. Make it count.</p>
+    </div>
+    <p style="text-align:center;color:var(--mu);font-size:14px">Gather the crew · <span class="countdown" id="h-cd" style="font-size:22px;vertical-align:-2px">90</span>s</p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn bp fw" onclick="App.openCamera()">I'm Ready — Open Camera</button>
+      <button class="btn bo fw" onclick="App.nextTheme()">New Challenge</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ CAMERA ══════ -->
+<div class="scr" id="s-camera">
+  <div class="cam-view">
+    <video id="cam-vid" autoplay playsinline></video>
+    <canvas id="cam-cv"></canvas>
+    <div class="cam-badge" id="cam-badge">🏆 You all just won $1 million!</div>
+  </div>
+  <div class="cam-ctrls">
+    <p style="color:rgba(255,255,255,.4);font-size:13px;text-align:center">Tap when everyone is ready 📸</p>
+    <div id="shutter-wrap"><button class="shutter" onclick="App.takePhoto()"></button></div>
+    <div class="preview-btns" id="preview-btns" style="display:none">
+      <button class="btn bo bsm" onclick="App.retakePhoto()">↩ Retake</button>
+      <button class="btn bp bsm" onclick="App.submitPhoto()">✓ Share to Gallery</button>
+    </div>
+    <button class="btn bg2 bsm" onclick="App.cancelCamera()" style="opacity:.5;font-size:12px">✕ Cancel</button>
+  </div>
+</div>
+
+<!-- ══════ GALLERY ══════ -->
+<div class="scr" id="s-gallery">
+  <div class="gal-hdr">
+    <button class="bkbtn" onclick="App.go('s-games')">← Back</button>
+    <h2>Party Gallery</h2>
+    <p id="gal-count" style="font-size:13px;margin-top:4px">0 memories</p>
+  </div>
+  <div class="gal-grid" id="gal-grid"><div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--mu)">No photos yet — be the first Memory Hero! 📸</div></div>
+  <div class="navb">
+    <button class="nitem" onclick="App.go('s-games')"><span class="nico">🎮</span><span class="nlbl">Games</span></button>
+    <button class="nitem on"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
+    <button class="nitem" onclick="App.go('s-match')"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
+  </div>
+</div>
+
+<!-- ══════ SETUP GUIDE ══════ -->
+<div id="setup-guide" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);backdrop-filter:blur(8px);z-index:9999;overflow-y:auto;padding:20px">
+  <div style="background:#151823;border:1px solid rgba(255,46,116,.22);border-radius:22px;padding:26px;max-width:450px;margin:0 auto">
+    <h2 style="font-family:'Syne',sans-serif;font-size:20px;margin-bottom:6px">🔧 Supabase Setup Guide</h2>
+    <p style="color:var(--mu);font-size:13px;margin-bottom:18px">Takes about 10 minutes. Everything is free on Supabase's free tier.</p>
+
+    <div style="font-size:14px;line-height:1.9;color:#c4b0e8;display:flex;flex-direction:column;gap:10px">
+      <div><strong style="color:#ff5fa2">Step 1 — Create project</strong><br>Go to <a href="https://supabase.com" target="_blank" style="color:#5b8cff">supabase.com</a> → New Project. Choose a region close to your guests.</div>
+      <div><strong style="color:#ff5fa2">Step 2 — Create tables</strong><br>Go to SQL Editor and run this:</div>
+      <div style="background:rgba(0,0,0,.4);border-radius:10px;padding:14px;font-family:monospace;font-size:11px;line-height:1.7;color:#a0ffa0;overflow-x:auto">
+-- Events table<br>
+create table events (<br>
+&nbsp;&nbsp;id text primary key,<br>
+&nbsp;&nbsp;party_name text,<br>
+&nbsp;&nbsp;host_name text,<br>
+&nbsp;&nbsp;vibe text,<br>
+&nbsp;&nbsp;welcome text,<br>
+&nbsp;&nbsp;emoji text,<br>
+&nbsp;&nbsp;visual_theme text,<br>
+&nbsp;&nbsp;font_family text,<br>
+&nbsp;&nbsp;active boolean default true,<br>
+&nbsp;&nbsp;purged boolean default false,<br>
+&nbsp;&nbsp;purged_at timestamptz,<br>
+&nbsp;&nbsp;created_at timestamptz default now()<br>
+);<br><br>
+-- Guests table<br>
+create table guests (<br>
+&nbsp;&nbsp;id text primary key,<br>
+&nbsp;&nbsp;event_id text references events(id),<br>
+&nbsp;&nbsp;name text,<br>
+&nbsp;&nbsp;selfie_url text,<br>
+&nbsp;&nbsp;color text,<br>
+&nbsp;&nbsp;created_at timestamptz default now()<br>
+);<br><br>
+-- Quiz answers<br>
+create table quiz_answers (<br>
+&nbsp;&nbsp;id text primary key default gen_random_uuid()::text,<br>
+&nbsp;&nbsp;event_id text references events(id),<br>
+&nbsp;&nbsp;guest_id text references guests(id),<br>
+&nbsp;&nbsp;answers jsonb,<br>
+&nbsp;&nbsp;created_at timestamptz default now(),<br>
+&nbsp;&nbsp;unique(event_id, guest_id)<br>
+);<br><br>
+-- Photos table<br>
+create table photos (<br>
+&nbsp;&nbsp;id text primary key,<br>
+&nbsp;&nbsp;event_id text references events(id),<br>
+&nbsp;&nbsp;hero_name text,<br>
+&nbsp;&nbsp;theme text,<br>
+&nbsp;&nbsp;emoji text,<br>
+&nbsp;&nbsp;photo_url text,<br>
+&nbsp;&nbsp;reactions jsonb default '{"heart":0,"fire":0,"laugh":0,"wow":0}',<br>
+&nbsp;&nbsp;created_at timestamptz default now()<br>
+);<br><br>
+-- Reaction increment function<br>
+create or replace function increment_reaction(<br>
+&nbsp;&nbsp;photo_id text, reaction_type text<br>
+) returns void language plpgsql as $$<br>
+begin<br>
+&nbsp;&nbsp;update photos<br>
+&nbsp;&nbsp;set reactions = jsonb_set(<br>
+&nbsp;&nbsp;&nbsp;&nbsp;reactions,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;array[reaction_type],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;to_jsonb((reactions->>reaction_type)::int + 1)<br>
+&nbsp;&nbsp;)<br>
+&nbsp;&nbsp;where id = photo_id;<br>
+end;<br>
+$$;<br><br>
+-- Enable realtime<br>
+alter publication supabase_realtime add table guests;<br>
+alter publication supabase_realtime add table photos;
+      </div>
+      <div><strong style="color:#ff5fa2">Step 3 — Storage bucket</strong><br>Go to Storage → New bucket → name it <code style="background:rgba(255,255,255,.1);padding:2px 6px;border-radius:4px">partyvibe</code> → set to Public.</div>
+      <div><strong style="color:#ff5fa2">Step 4 — Row Level Security</strong><br>For testing: in each table → RLS → Disable RLS. For production, add proper policies.</div>
+      <div><strong style="color:#ff5fa2">Step 5 — Get your keys</strong><br>Project Settings → API → copy <em>Project URL</em> and <em>anon public key</em> → paste into the top of this file.</div>
+      <div><strong style="color:#ff5fa2">Step 6 — Host it</strong><br>Deploy on <a href="https://vercel.com" target="_blank" style="color:#5b8cff">Vercel</a>, <a href="https://netlify.com" target="_blank" style="color:#5b8cff">Netlify</a>, or Supabase Hosting so guests get a real URL to scan.</div>
+    </div>
+    <button onclick="document.getElementById('setup-guide').style.display='none'" class="btn bp fw" style="margin-top:20px">Got it — let's party!</button>
+  </div>
+</div>
+
+<div style="position:fixed;bottom:18px;right:14px;z-index:5000">
+  <button onclick="document.getElementById('setup-guide').style.display='block'" style="background:rgba(255,46,116,.13);border:1px solid rgba(255,46,116,.3);color:#ff5fa2;border-radius:50px;padding:7px 13px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif">⚙️ Setup</button>
+</div>
+
+<!-- ══════ APP LOGIC ══════ -->
+<script>
+const QUESTIONS = [
+  { q: "What goes on pizza? 🍕", opts: [{e:"🥦",t:"Vegetables"},{e:"🍦",t:"Ice Cream"},{e:"🥓",t:"Bacon"},{e:"🍫",t:"Chocolate"}] },
+  { q: "Pick your dream superpower 🦸", opts: [{e:"🚀",t:"Fly anywhere"},{e:"🔮",t:"See the future"},{e:"👻",t:"Turn invisible"},{e:"⏰",t:"Control time"}] },
+  { q: "Perfect holiday vibe? ✈️", opts: [{e:"🏖️",t:"Beach & cocktails"},{e:"🏔️",t:"Mountains & hikes"},{e:"🏙️",t:"Big city energy"},{e:"🏕️",t:"Off-grid camping"}] },
+  { q: "Your party personality is... 🎉", opts: [{e:"💃",t:"Dance all night"},{e:"🃏",t:"Games & laughs"},{e:"🍷",t:"Deep convos"},{e:"🎤",t:"Karaoke chaos"}] }
+];
+
+const THEMES = [
+  {e:"🏆", t:"You all just won $1 million each — show your reaction!"},
+  {e:"🦸", t:"Everyone strike your best superhero pose — hold it!"},
+  {e:"🕺", t:"Freeze in your best dance move right now!"},
+  {e:"🌴", t:"You've been stranded on a desert island together!"},
+  {e:"🎬", t:"You're in the season finale of your fav show!"},
+  {e:"🥇", t:"Team photo — you just won the World Cup!"},
+  {e:"👑", t:"Everyone is royalty. Act like it."},
+  {e:"🚀", t:"The rocket just launched. You're all astronauts!"},
+  {e:"🎪", t:"You're all circus performers — what's your act?"},
+  {e:"🤝", t:"Find someone you just met and intro them to the camera!"},
+  {e:"😱", t:"React like you just saw something unbelievable!"},
+  {e:"🎂", t:"Pretend it's a surprise birthday — everyone yell SURPRISE!"}
+];
+
+// ── App State ──────────────────────────────────────
+const S = {
+  eid: null, gid: null, name: '', selfie: null,
+  qa: [], qi: 0,
+  hti: 0, htv: 90, htimer: null, theme: null,
+  stream: null, photo: null,
+  emoji: '🌴', vtheme: 'th-night', font: 'Plus Jakarta Sans',
+  url: '',
+  galUnsub: null, gstUnsub: null,
+  lastMatches: []
+};
+
+// ── Init ──────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  genStars();
+  updateBadge();
+  const params = new URLSearchParams(location.search);
+  if (params.get('event')) joinEvent(params.get('event'));
+});
+
+function updateBadge() {
+  const b = document.getElementById('sb-status');
+  if (SB.live) { b.className = 'sb-badge'; b.textContent = '🟢 Supabase connected — live mode'; }
+}
+
+function genStars() {
+  const c = document.getElementById('stars-bg');
+  for (let i = 0; i < 55; i++) {
+    const s = document.createElement('div'); s.className = 'star';
+    const z = Math.random() * 2 + 1;
+    s.style.cssText = `width:${z}px;height:${z}px;top:${Math.random()*100}%;left:${Math.random()*100}%;animation-duration:${Math.random()*4+2}s;animation-delay:${Math.random()*5}s`;
+    c.appendChild(s);
+  }
+}
+
+async function joinEvent(eid) {
+  showLoad('Loading event...');
+  try {
+    const ev = await SB.getEvent(eid);
+    S.eid = eid;
+    const d = ev || { party_name:'Party', host_name:'Host', vibe:'', emoji:'🎉', welcome:'Welcome!', visual_theme:'th-night', font_family:'Syne' };
+    applyTheme(d);
+    document.getElementById('pb-emoji').textContent = d.emoji || '🎉';
+    document.getElementById('pb-title').textContent = d.party_name;
+    document.getElementById('pb-sub').textContent = `Hosted by ${d.host_name}${d.vibe ? ' · ' + d.vibe : ''}`;
+    document.getElementById('pb-welcome').textContent = d.welcome;
+    hideLoad();
+    App.go('s-join');
+  } catch(e) {
+    hideLoad();
+    toast('Could not load event — running in demo mode');
+    S.eid = eid;
+    App.go('s-join');
+  }
+}
+
+function applyTheme(ev) {
+  document.body.className = ev.visual_theme || '';
+  const f = ev.font_family || 'Syne';
+  document.documentElement.style.setProperty('--fh', `'${f}',sans-serif`);
+}
+
+function showLoad(msg = 'Loading...') {
+  let el = document.getElementById('ldov');
+  if (!el) { el = document.createElement('div'); el.id = 'ldov'; el.className = 'ldov'; document.body.appendChild(el); }
+  el.innerHTML = `<div class="spnr"></div><p style="color:var(--mu);font-size:14px">${msg}</p>`;
+  el.style.display = 'flex';
+}
+function hideLoad() { const el = document.getElementById('ldov'); if (el) el.style.display = 'none'; }
+function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 3200); }
+
+function drawQR(text) {
+  const cv = document.getElementById('qr-canvas'), ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 200, 200);
+  const p=[[1,1,1,1,1,1,1,0,1,0,0,1,0,1,1,1,1,1,1,1,1],[1,0,0,0,0,0,1,0,1,1,0,0,1,0,1,0,0,0,0,0,1],[1,0,1,1,1,0,1,0,0,0,1,0,1,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,1,0,0,1,0,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,0,1,1,0,1,0,1,0,1,1,1,0,1],[1,0,0,0,0,0,1,0,1,0,1,1,0,0,1,0,0,0,0,0,1],[1,1,1,1,1,1,1,0,1,0,1,0,1,0,1,1,1,1,1,1,1],[0,0,0,0,0,0,0,0,1,1,0,1,1,0,0,0,0,0,0,0,0],[1,0,1,1,0,1,1,1,0,0,1,0,0,1,1,0,1,1,0,1,1],[0,1,0,1,1,0,0,0,1,1,0,1,1,0,0,1,0,1,1,0,0],[1,1,0,0,1,1,1,1,1,0,1,0,1,1,1,1,0,0,1,1,1],[0,0,1,0,0,0,0,0,1,0,1,1,0,0,0,0,1,0,0,0,0],[1,1,1,1,1,1,1,0,0,1,0,0,1,0,1,1,1,1,1,1,1],[1,0,0,0,0,0,1,0,1,0,1,1,0,0,1,0,0,0,0,0,1],[1,0,1,1,1,0,1,0,0,1,0,0,1,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,1,0,1,1,0,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,0,1,1,0,1,0,1,0,1,1,1,0,1],[1,0,0,0,0,0,1,0,1,1,0,1,0,0,1,0,0,0,0,0,1],[1,1,1,1,1,1,1,0,0,0,1,0,0,0,1,1,1,1,1,1,1]];
+  const cl = 8, of = 16; ctx.fillStyle = '#11141d';
+  p.forEach((r,ri) => r.forEach((v,ci) => { if(v) ctx.fillRect(of+ci*cl,of+ri*cl,cl-1,cl-1); }));
+  ctx.fillStyle = '#ff2e74'; ctx.fillRect(88, 88, 24, 24);
+  ctx.fillStyle = '#11141d'; ctx.font = '7px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(text.slice(-12), 100, 196);
+}
+
+// ── App Controller ─────────────────────────────────
+const App = {
+  go(id) {
+    document.querySelectorAll('.scr').forEach(s => s.classList.remove('on'));
+    document.getElementById(id).classList.add('on');
+    window.scrollTo(0, 0);
+  },
+
+  // ── Host setup pickers ──────────────────────────
+  pickEmoji(el, em) {
+    document.querySelectorAll('#emoji-pick .font-btn').forEach(e => e.classList.remove('on'));
+    el.classList.add('on'); S.emoji = em;
+  },
+  pickTheme(el, t) {
+    document.querySelectorAll('.theme-sw').forEach(e => e.classList.remove('on'));
+    el.classList.add('on'); S.vtheme = t; document.body.className = t;
+  },
+  pickFont(el, f) {
+    document.querySelectorAll('#font-pick .font-btn').forEach(e => e.classList.remove('on'));
+    el.classList.add('on'); S.font = f;
+    document.documentElement.style.setProperty('--fh', `'${f}',sans-serif`);
+  },
+
+  // ── Activate event ──────────────────────────────
+  async activate() {
+    const pn = document.getElementById('h-pname').value.trim() || 'Party';
+    const hn = document.getElementById('h-hname').value.trim() || 'Host';
+    const vb = document.getElementById('h-vibe').value.trim() || '';
+    const wm = document.getElementById('h-welcome').value.trim() || '';
+    S.eid = uid();
+    const evData = { id: S.eid, party_name: pn, host_name: hn, vibe: vb, welcome: wm, emoji: S.emoji, visual_theme: S.vtheme, font_family: S.font, active: true };
+    showLoad('Creating event...');
+    try { await SB.createEvent(evData); } catch(e) { console.warn('createEvent:', e); }
+    hideLoad();
+    const url = `${location.origin}${location.pathname}?event=${S.eid}`;
+    S.url = url;
+    document.getElementById('qr-title').textContent = pn;
+    document.getElementById('eid-label').textContent = `Event ID: ${S.eid}`;
+    drawQR(url);
+    this.go('s-qr');
+    this.listenGuests();
+    toast(`🎉 Event live! Share the QR code`);
+  },
+
+  copyLink() {
+    if (!S.url) return;
+    const done = () => toast('🔗 Link copied!');
+    if (navigator.clipboard) navigator.clipboard.writeText(S.url).then(done).catch(() => prompt('Copy this link:', S.url));
+    else prompt('Copy this link:', S.url);
+  },
+
+  // ── Guest listener ──────────────────────────────
+  listenGuests() {
+    if (S.gstUnsub) S.gstUnsub.unsubscribe();
+    S.gstUnsub = SB.listenGuests(S.eid, guests => {
+      document.getElementById('guest-count').textContent = guests.length;
+      const chips = document.getElementById('guest-chips');
+      chips.innerHTML = '';
+      guests.forEach(g => {
+        const ch = document.createElement('div'); ch.className = 'g-chip';
+        const av = g.selfie_url
+          ? `<img class="miniav" src="${g.selfie_url}" alt="${g.name}" style="object-fit:cover">`
+          : `<div class="miniav" style="background:${g.color||'#ff2e74'}22;color:${g.color||'#ff2e74'}">${(g.name||'?')[0]}</div>`;
+        ch.innerHTML = `${av}<span>${g.name}</span>`;
+        chips.appendChild(ch);
+      });
+      this.renderHostPanel(guests);
+    });
+  },
+
+  renderHostPanel(guests) {
+    const el = document.getElementById('hp-glist');
+    document.getElementById('hp-sub').textContent = `${guests.length} guest${guests.length!==1?'s':''} tonight`;
+    el.innerHTML = '';
+    if (!guests.length) { el.innerHTML = '<p style="color:var(--mu);font-size:14px">No guests yet</p>'; return; }
+    guests.forEach(g => {
+      const r = document.createElement('div'); r.className = 'guest-row';
+      const av = g.selfie_url
+        ? `<img class="gav" src="${g.selfie_url}" alt="${g.name}">`
+        : `<div class="gav" style="background:${g.color||'#ff2e74'}22;color:${g.color||'#ff2e74'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px">${(g.name||'?')[0]}</div>`;
+      r.innerHTML = `${av}<span style="font-weight:500;flex:1">${g.name}</span><span class="tag">Joined ✓</span>`;
+      el.appendChild(r);
+    });
+  },
+
+  // ── Join flow ────────────────────────────────────
+  joinFlow() {
+    const input = prompt('Enter Event ID or paste the event URL:');
+    if (!input) return;
+    const m = input.match(/event=([a-z0-9]+)/i);
+    joinEvent(m ? m[1] : input.trim());
+  },
+
+  guestNext() {
+    const n = document.getElementById('guest-name').value.trim();
+    if (!n) { toast('Please enter your name!'); return; }
+    S.name = n; S.gid = uid();
+    document.getElementById('g-name').textContent = n;
+    this.go('s-selfie');
+  },
+
+  // ── Selfie ───────────────────────────────────────
+  async startSelfie() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+      S.stream = stream;
+      const v = document.getElementById('selfie-vid');
+      v.srcObject = stream; v.style.display = 'block';
+      document.getElementById('selfie-ph').style.display = 'none';
+      document.getElementById('selfie-b1').style.display = 'none';
+      document.getElementById('selfie-b2').style.display = 'flex';
+    } catch(e) { toast('Camera unavailable — using avatar'); this.skipSelfie(); }
+  },
+
+  snapSelfie() {
+    const v = document.getElementById('selfie-vid'), c = document.getElementById('selfie-cv');
+    const ctx = c.getContext('2d'); c.width = 300; c.height = 300;
+    ctx.save(); ctx.scale(-1, 1); ctx.drawImage(v, -300, 0, 300, 300); ctx.restore();
+    v.style.display = 'none'; c.style.display = 'block';
+    S.selfie = c.toDataURL('image/jpeg', .75);
+    document.getElementById('selfie-b2').style.display = 'none';
+    document.getElementById('selfie-b3').style.display = 'flex';
+  },
+
+  retakeSelfie() {
+    document.getElementById('selfie-cv').style.display = 'none';
+    document.getElementById('selfie-vid').style.display = 'block';
+    S.selfie = null;
+    document.getElementById('selfie-b3').style.display = 'none';
+    document.getElementById('selfie-b2').style.display = 'flex';
+  },
+
+  async acceptSelfie() {
+    if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+    await this.saveGuest(); this.go('s-games');
+  },
+
+  async skipSelfie() {
+    if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+    S.selfie = null; await this.saveGuest(); this.go('s-games');
+  },
+
+  async saveGuest() {
+    const colors = ['#ff2e74','#ff5fa2','#ffc24b','#5b8cff','#16d6a6','#b76cff'];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    showLoad('Joining party...');
+    try {
+      let selfieUrl = null;
+      if (S.selfie) {
+        try { selfieUrl = await SB.uploadSelfie(S.eid, S.gid, S.selfie); }
+        catch(e) { selfieUrl = S.selfie; }
+      }
+      S.selfie = selfieUrl;
+      await SB.upsertGuest({ id: S.gid, event_id: S.eid, name: S.name, selfie_url: selfieUrl, color });
+    } catch(e) { console.warn('saveGuest:', e); }
+    hideLoad();
+  },
+
+  // ── Quiz ─────────────────────────────────────────
+  startQuiz() { S.qa = []; S.qi = 0; this.renderQ(); this.go('s-quiz'); },
+
+  renderQ() {
+    const q = QUESTIONS[S.qi];
+    document.getElementById('q-num').textContent = S.qi + 1;
+    document.getElementById('q-bar').style.width = ((S.qi + 1) / 4 * 100) + '%';
+    document.getElementById('q-text').textContent = q.q;
+    const og = document.getElementById('q-opts'); og.innerHTML = '';
+    q.opts.forEach((o, i) => {
+      const b = document.createElement('button'); b.className = 'opt';
+      b.innerHTML = `<span class="opt-em">${o.e}</span><span>${o.t}</span><span class="chk">✓</span>`;
+      b.onclick = () => { document.querySelectorAll('.opt').forEach(x => x.classList.remove('on')); b.classList.add('on'); S.qa[S.qi] = i; document.getElementById('q-next').disabled = false; };
+      og.appendChild(b);
+    });
+    const nb = document.getElementById('q-next'); nb.disabled = true;
+    nb.textContent = S.qi === 3 ? 'Find my matches! 🎉' : 'Next →';
+  },
+
+  qNext() { if (S.qi < 3) { S.qi++; this.renderQ(); } else this.findMatches(); },
+
+  async findMatches() {
+    showLoad('Finding your matches...');
+    try {
+      await SB.upsertQuiz({ id: uid(), event_id: S.eid, guest_id: S.gid, answers: S.qa });
+      const matches = await SB.getMatches(S.eid, S.qa, S.gid);
+      S.lastMatches = matches; hideLoad(); this.renderMatches(matches);
+    } catch(e) {
+      hideLoad();
+      this.renderMatches([{ name:'Alex', selfie_url:null, color:'#ff2e74', score:87 }, { name:'Jordan', selfie_url:null, color:'#ff5fa2', score:75 }]);
+    }
+  },
+
+  renderMatches(matches) {
+    const mg = document.getElementById('match-grid'); mg.innerHTML = '';
+    if (!matches.length) {
+      document.getElementById('match-sub').textContent = 'No matches yet — more people need to play!';
+      document.getElementById('shared-box').style.display = 'none';
+    } else {
+      document.getElementById('match-sub').textContent = `${matches.length} match${matches.length!==1?'es':''} found — go find them!`;
+      matches.forEach(m => {
+        const d = document.createElement('div'); d.className = 'mperson';
+        const init = (m.name || '?')[0].toUpperCase();
+        const avHtml = m.selfie_url
+          ? `<img src="${m.selfie_url}" style="width:100%;height:100%;object-fit:cover">`
+          : `<span style="font-size:20px;font-weight:700;color:${m.color||'#ff2e74'}">${init}</span>`;
+        d.innerHTML = `<div class="mav">${avHtml}</div><div><div class="mname">${m.name}</div><div class="mscore">You both matched ${m.score}%</div></div>`;
+        mg.appendChild(d);
+      });
+      document.getElementById('shared-box').style.display = 'block';
+      document.getElementById('shared-ans').innerHTML = S.qa.map((a,i) => `<div>${QUESTIONS[i].opts[a].e} ${QUESTIONS[i].opts[a].t}</div>`).join('');
+    }
+    this.playSound(); this.confetti(); this.go('s-match');
+  },
+
+  playSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [523, 659, 784, 1047].forEach((f, i) => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination); o.frequency.value = f; o.type = 'sine';
+        g.gain.setValueAtTime(0, ctx.currentTime + i * .12);
+        g.gain.linearRampToValueAtTime(.27, ctx.currentTime + i * .12 + .05);
+        g.gain.linearRampToValueAtTime(0, ctx.currentTime + i * .12 + .22);
+        o.start(ctx.currentTime + i * .12); o.stop(ctx.currentTime + i * .12 + .3);
+      });
+    } catch(e) {}
+  },
+
+  confetti() {
+    const w = document.createElement('div'); w.className = 'cfwrap';
+    const cs = ['#ff2e74','#ff5fa2','#ffc24b','#5b8cff','#16d6a6','#fff'];
+    for (let i = 0; i < 70; i++) {
+      const p = document.createElement('div'); p.className = 'cfp';
+      p.style.cssText = `left:${Math.random()*100}%;width:${Math.random()*8+4}px;height:${Math.random()*8+4}px;background:${cs[Math.floor(Math.random()*cs.length)]};animation-duration:${Math.random()*2+1.5}s;animation-delay:${Math.random()*.6}s`;
+      w.appendChild(p);
+    }
+    document.body.appendChild(w); setTimeout(() => w.remove(), 3600);
+  },
+
+  // ── Hero game ────────────────────────────────────
+  startHero() {
+    clearInterval(S.htimer); S.htv = 90; S.hti = S.hti % THEMES.length;
+    this.renderTheme();
+    document.getElementById('h-cd').textContent = '90';
+    document.getElementById('h-cd').classList.remove('urgent');
+    this.go('s-hero'); this.startTimer();
+    toast(`${S.theme.e} ${S.name || 'Someone'} is calling a group photo!`);
+  },
+
+  renderTheme() {
+    S.theme = THEMES[S.hti];
+    document.getElementById('h-emoji').textContent = S.theme.e;
+    document.getElementById('h-theme').textContent = S.theme.t;
+  },
+
+  startTimer() {
+    S.htimer = setInterval(() => {
+      S.htv--;
+      const el = document.getElementById('h-cd');
+      if (el) { el.textContent = S.htv; if (S.htv <= 15) el.classList.add('urgent'); }
+      if (S.htv <= 0) { clearInterval(S.htimer); if (el) el.textContent = '📸'; }
+    }, 1000);
+  },
+
+  nextTheme() {
+    clearInterval(S.htimer);
+    S.hti = (S.hti + 1) % THEMES.length; S.htv = 90;
+    this.renderTheme();
+    document.getElementById('h-cd').textContent = '90';
+    document.getElementById('h-cd').classList.remove('urgent');
+    this.startTimer(); toast(`${S.theme.e} New theme!`);
+  },
+
+  cancelHero() { clearInterval(S.htimer); this.go('s-games'); },
+
+  // ── Camera ───────────────────────────────────────
+  async openCamera() {
+    clearInterval(S.htimer);
+    const th = S.theme || THEMES[0];
+    document.getElementById('cam-badge').textContent = `${th.e} ${th.t}`;
+    document.getElementById('cam-vid').style.display = 'block';
+    document.getElementById('cam-cv').style.display = 'none';
+    document.getElementById('shutter-wrap').style.display = 'flex';
+    document.getElementById('preview-btns').style.display = 'none';
+    this.go('s-camera');
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } });
+      S.stream = s; document.getElementById('cam-vid').srcObject = s;
+    } catch(e) { toast('Camera unavailable'); await this.saveSimPhoto(); }
+  },
+
+  takePhoto() {
+    const v = document.getElementById('cam-vid'), c = document.getElementById('cam-cv');
+    const ctx = c.getContext('2d'); c.width = v.videoWidth || 640; c.height = v.videoHeight || 480;
+    ctx.drawImage(v, 0, 0); S.photo = c.toDataURL('image/jpeg', .75);
+    v.style.display = 'none'; c.style.display = 'block';
+    document.getElementById('shutter-wrap').style.display = 'none';
+    document.getElementById('preview-btns').style.display = 'flex';
+  },
+
+  retakePhoto() {
+    document.getElementById('cam-vid').style.display = 'block';
+    document.getElementById('cam-cv').style.display = 'none';
+    S.photo = null;
+    document.getElementById('shutter-wrap').style.display = 'flex';
+    document.getElementById('preview-btns').style.display = 'none';
+  },
+
+  async submitPhoto() {
+    if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+    const th = S.theme || THEMES[0];
+    showLoad('Uploading to gallery...');
+    try {
+      let photoUrl = null;
+      if (S.photo) {
+        try { photoUrl = await SB.uploadPhoto(S.eid, S.photo); }
+        catch(e) { photoUrl = S.photo; }
+      }
+      await SB.insertPhoto({ id: uid(), event_id: S.eid, hero_name: S.name || 'Guest', theme: th.t, emoji: th.e, photo_url: photoUrl, reactions: { heart:0, fire:0, laugh:0, wow:0 } });
+    } catch(e) { console.warn('submitPhoto:', e); }
+    hideLoad(); this.go('s-gallery'); this.listenGallery(); this.confetti();
+    toast('🎉 Memory added to the gallery!');
+  },
+
+  cancelCamera() {
+    if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+    this.go('s-hero');
+  },
+
+  async saveSimPhoto() {
+    const th = S.theme || THEMES[0];
+    await SB.insertPhoto({ id: uid(), event_id: S.eid, hero_name: S.name || 'Guest', theme: th.t, emoji: th.e, photo_url: null, reactions: { heart:0, fire:0, laugh:0, wow:0 } });
+    this.go('s-gallery'); this.listenGallery(); this.confetti();
+    toast('📸 Memory saved to gallery!');
+  },
+
+  // ── Gallery ──────────────────────────────────────
+  listenGallery() {
+    if (S.galUnsub) S.galUnsub.unsubscribe();
+    S.galUnsub = SB.listenPhotos(S.eid || 'demo', photos => this.renderGallery(photos));
+  },
+
+  renderGallery(photos) {
+    const grid = document.getElementById('gal-grid');
+    document.getElementById('gal-count').textContent = `${photos.length} ${photos.length!==1?'memories':'memory'}`;
+    if (!photos.length) { grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--mu)">No photos yet — be the first Memory Hero! 📸</div>'; return; }
+    grid.innerHTML = '';
+    photos.forEach(item => {
+      const el = document.createElement('div'); el.className = 'gal-item';
+      const pid = item.id;
+      const r = item.reactions || { heart:0, fire:0, laugh:0, wow:0 };
+      const imgH = item.photo_url ? `<img src="${item.photo_url}" alt="Memory" loading="lazy" onerror="this.style.display='none'">` : '';
+      const ph = `<div class="gal-ph" ${item.photo_url?'style="display:none"':''}>${item.emoji||'📸'}</div>`;
+      el.innerHTML = `${imgH}${ph}
+        <div class="gal-cap">
+          <div class="gal-hero">📸 ${item.hero_name}</div>
+          <div class="gal-theme">${item.theme}</div>
+        </div>
+        <div class="reacts">
+          <button class="rbtn" onclick="App.react('${pid}','heart')">❤️<span class="rcnt">${r.heart||0}</span></button>
+          <button class="rbtn" onclick="App.react('${pid}','fire')">🔥<span class="rcnt">${r.fire||0}</span></button>
+          <button class="rbtn" onclick="App.react('${pid}','laugh')">😂<span class="rcnt">${r.laugh||0}</span></button>
+          <button class="rbtn" onclick="App.react('${pid}','wow')">🤩<span class="rcnt">${r.wow||0}</span></button>
+        </div>`;
+      grid.appendChild(el);
+    });
+  },
+
+  async react(pid, type) {
+    // Optimistic UI
+    const btns = document.querySelectorAll(`.rbtn`);
+    btns.forEach(b => {
+      if (b.getAttribute('onclick') === `App.react('${pid}','${type}')`) {
+        const cnt = b.querySelector('.rcnt');
+        if (cnt) cnt.textContent = parseInt(cnt.textContent || 0) + 1;
+        b.style.transform = 'scale(1.4)';
+        setTimeout(() => b.style.transform = '', 200);
+      }
+    });
+    try { await SB.react(pid, type); } catch(e) { console.warn(e); }
+  },
+
+  // ── Purge ────────────────────────────────────────
+  confirmPurge() {
+    const mo = document.createElement('div'); mo.className = 'modov';
+    mo.innerHTML = `<div class="modsh"><div class="modh"></div>
+      <h3 style="font-family:var(--fh);font-size:19px;margin-bottom:10px">End Event & Purge All Data?</h3>
+      <p style="color:var(--mu);font-size:14px;line-height:1.6;margin-bottom:20px">Removes all selfies and photos from Supabase Storage. Guest records marked purged. This cannot be undone.</p>
+      <div style="display:flex;flex-direction:column;gap:9px">
+        <button class="btn bdn fw" onclick="App.doPurge();this.closest('.modov').remove()">🗑️ Yes, End & Purge Everything</button>
+        <button class="btn bo fw" onclick="this.closest('.modov').remove()">Cancel</button>
+      </div></div>`;
+    document.body.appendChild(mo);
+  },
+
+  async doPurge() {
+    showLoad('Purging all event data...');
+    try { await SB.purgeEvent(S.eid); } catch(e) { console.warn(e); }
+    hideLoad(); toast('✅ All event data purged.');
+    setTimeout(() => this.go('s-splash'), 1600);
+  }
+};
+</script>
+</body>
+</html>

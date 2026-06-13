@@ -1,0 +1,13 @@
+# Local Supabase env (the publishable key is already embedded in the HTML for the
+# static app; this Next.js-style file is not needed for deployment — keep it out of git)
+.env.local
+
+# macOS / editor cruft
+.DS_Store
+**/.DS_Store
+
+# Claude Code local tooling
+.claude/
+
+# Node (if you add a build later)
+node_modules/
