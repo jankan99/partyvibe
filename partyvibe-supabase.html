@@ -136,13 +136,13 @@ const SB = {
       let match = 0;
       const b = r.answers;
       for (let i = 0; i < 4; i++) if (myAnswers[i] === b[i]) match++;
-      return { guest_id: r.guest_id, score: Math.round(match / 4 * 100) };
+      return { guest_id: r.guest_id, score: Math.round(match / 4 * 100), answers: b };
     }).filter(r => r.score >= 50).sort((a, b) => b.score - a.score).slice(0, 5);
 
     const result = [];
-    for (const { guest_id, score } of scored) {
+    for (const { guest_id, score, answers } of scored) {
       const { data: g } = await _sb.from('guests').select('*').eq('id', guest_id).single();
-      if (g) result.push({ ...g, score });
+      if (g) result.push({ ...g, score, answers });
     }
     return result;
   },
@@ -531,7 +531,9 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
 .md-photo img { width:100%; height:100%; object-fit:cover; }
 .md-name { font-size:27px; font-weight:800; font-family:var(--fh); line-height:1.1; }
 .md-score { color:var(--ac); font-weight:600; font-size:15px; margin-top:7px; }
-.md-hint { color:var(--mu); font-size:14px; margin-top:16px; line-height:1.5; }
+.md-ice-lbl { font-size:11px; color:var(--ac); letter-spacing:.08em; text-transform:uppercase; font-weight:700; margin-top:18px; }
+.md-hint { color:var(--tx); font-size:15px; margin-top:7px; line-height:1.5; }
+.md-hint strong { color:var(--ac); }
 
 /* ── GALLERY PHOTO DETAIL ── */
 .gal-exp { position:absolute; top:8px; right:8px; width:26px; height:26px; border-radius:8px; background:rgba(0,0,0,.45); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; font-size:14px; color:#fff; pointer-events:none; }
@@ -914,10 +916,10 @@ alter publication supabase_realtime add table photos;
 <!-- ══════ APP LOGIC ══════ -->
 <script>
 const QUESTIONS = [
-  { q: "What goes on pizza? 🍕", opts: [{e:"🥦",t:"Vegetables"},{e:"🍦",t:"Ice Cream"},{e:"🥓",t:"Bacon"},{e:"🍫",t:"Chocolate"}] },
-  { q: "Pick your dream superpower 🦸", opts: [{e:"🚀",t:"Fly anywhere"},{e:"🔮",t:"See the future"},{e:"👻",t:"Turn invisible"},{e:"⏰",t:"Control time"}] },
-  { q: "Perfect holiday vibe? ✈️", opts: [{e:"🏖️",t:"Beach & cocktails"},{e:"🏔️",t:"Mountains & hikes"},{e:"🏙️",t:"Big city energy"},{e:"🏕️",t:"Off-grid camping"}] },
-  { q: "Your party personality is... 🎉", opts: [{e:"💃",t:"Dance all night"},{e:"🃏",t:"Games & laughs"},{e:"🍷",t:"Deep convos"},{e:"🎤",t:"Karaoke chaos"}] }
+  { q: "What goes on pizza? 🍕", ice: "team up and defend your topping", opts: [{e:"🥦",t:"Vegetables"},{e:"🍦",t:"Ice Cream"},{e:"🥓",t:"Bacon"},{e:"🍫",t:"Chocolate"}] },
+  { q: "Pick your dream superpower 🦸", ice: "go plan your superhero team-up", opts: [{e:"🚀",t:"Fly anywhere"},{e:"🔮",t:"See the future"},{e:"👻",t:"Turn invisible"},{e:"⏰",t:"Control time"}] },
+  { q: "Perfect holiday vibe? ✈️", ice: "start planning your dream trip together", opts: [{e:"🏖️",t:"Beach & cocktails"},{e:"🏔️",t:"Mountains & hikes"},{e:"🏙️",t:"Big city energy"},{e:"🏕️",t:"Off-grid camping"}] },
+  { q: "Your party personality is... 🎉", ice: "go find each other and own the night", opts: [{e:"💃",t:"Dance all night"},{e:"🃏",t:"Games & laughs"},{e:"🍷",t:"Deep convos"},{e:"🎤",t:"Karaoke chaos"}] }
 ];
 
 const THEMES = [
@@ -1327,6 +1329,7 @@ const App = {
     const photo = m.selfie_url
       ? `<img src="${m.selfie_url}" alt="${m.name}">`
       : `<span style="font-size:66px;font-weight:800;color:${m.color||'#ff2e74'}">${init}</span>`;
+    const ice = this.iceBreaker(m);
     const mo = document.createElement('div'); mo.className = 'modov';
     mo.style.alignItems = 'center';
     mo.innerHTML = `<div class="match-detail">
@@ -1334,10 +1337,25 @@ const App = {
       <div class="md-photo">${photo}</div>
       <h3 class="md-name">${m.name}</h3>
       <div class="md-score">You both matched ${m.score}%</div>
-      <p class="md-hint">Go find them in the room and say hi! 👋</p>
+      <div class="md-ice-lbl">🧊 Your icebreaker</div>
+      <p class="md-hint">${ice}</p>
     </div>`;
     mo.addEventListener('click', e => { if (e.target === mo) mo.remove(); });
     document.body.appendChild(mo);
+  },
+
+  // Build a tailored opener from a specific answer both guests chose
+  iceBreaker(m) {
+    const fallback = 'Go find them in the room and say hi! 👋';
+    if (!Array.isArray(m.answers) || !Array.isArray(S.qa)) return fallback;
+    const shared = [];
+    for (let q = 0; q < QUESTIONS.length; q++) {
+      if (S.qa[q] != null && S.qa[q] === m.answers[q]) shared.push(q);
+    }
+    if (!shared.length) return fallback;
+    const q = shared[Math.floor(Math.random() * shared.length)];
+    const opt = QUESTIONS[q].opts[S.qa[q]];
+    return `You both chose ${opt.e} <strong>${opt.t}</strong> — ${QUESTIONS[q].ice}!`;
   },
 
   playSound() {
