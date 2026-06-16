@@ -22,6 +22,7 @@
 ╚══════════════════════════════════════════════════╝
 -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 // ── SUPABASE CONFIG ─────────────────────────────
 const SUPABASE_URL  = 'https://zkxajwmyffymzkwnmvvg.supabase.co';
@@ -200,6 +201,17 @@ const SB = {
     }
     // Use RPC for atomic increment
     await _sb.rpc('increment_reaction', { photo_id: photoId, reaction_type: type });
+  },
+
+  // ── Rally (ephemeral broadcast: "gather for a group photo") ──
+  rallyChannel(eventId, onRally) {
+    if (!LIVE) return { send() {}, unsubscribe() {} };
+    const ch = _sb.channel('rally_' + eventId, { config: { broadcast: { self: false } } });
+    ch.on('broadcast', { event: 'rally' }, ({ payload }) => onRally(payload)).subscribe();
+    return {
+      send: (payload) => ch.send({ type: 'broadcast', event: 'rally', payload }),
+      unsubscribe: () => _sb.removeChannel(ch)
+    };
   },
 
   // ── Purge ────────────────────────────────────
@@ -434,6 +446,10 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
 .countdown { font-size:48px; font-weight:800; font-family:var(--fh); color:var(--ac); text-align:center; line-height:1; transition:color .3s; }
 .countdown.urgent { color:var(--ac2); animation:urgp .6s ease-in-out infinite; }
 @keyframes urgp { 0%,100%{transform:scale(1)} 50%{transform:scale(1.06)} }
+.vol-hint { display:flex; align-items:center; justify-content:center; gap:9px; width:100%; background:rgba(91,140,255,.09); border:1px solid rgba(91,140,255,.22); color:var(--ac3); border-radius:14px; padding:13px 15px; font-size:13px; font-family:var(--fb); font-weight:500; line-height:1.4; text-align:center; cursor:pointer; transition:border-color .2s,transform .12s; }
+.vol-hint:hover { border-color:var(--ac3); }
+.vol-hint:active { transform:scale(.99); }
+.vol-hint .vh-ico { font-size:17px; flex-shrink:0; }
 
 /* ── CAMERA ── */
 #s-camera { background:#000; }
@@ -480,6 +496,14 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
 @keyframes tin { from{opacity:0;transform:translateX(-50%) translateY(-14px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
 @keyframes tout { to{opacity:0} }
 
+/* ── BIG ALERT (in-app realtime notification) ── */
+.balert { position:fixed; top:14px; left:50%; transform:translateX(-50%); width:calc(100% - 28px); max-width:452px; background:linear-gradient(135deg,var(--ac),var(--ac2)); color:#fff; border-radius:18px; padding:14px 16px; z-index:9998; display:flex; align-items:center; gap:13px; box-shadow:0 14px 44px -8px var(--glow); animation:balin .35s cubic-bezier(.34,1.56,.64,1); cursor:pointer; }
+.balert .bal-emoji { font-size:30px; flex-shrink:0; }
+.balert .bal-title { font-family:var(--fh); font-weight:800; font-size:15px; line-height:1.2; }
+.balert .bal-sub { font-size:12.5px; opacity:.92; margin-top:2px; line-height:1.3; }
+.balert .bal-x { margin-left:auto; background:rgba(255,255,255,.22); border:none; color:#fff; width:26px; height:26px; border-radius:50%; cursor:pointer; flex-shrink:0; font-size:13px; }
+@keyframes balin { from{opacity:0;transform:translateX(-50%) translateY(-16px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+
 /* ── LOADING ── */
 .ldov { position:fixed; inset:0; background:rgba(6,8,14,.85); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px; z-index:8888; }
 .spnr { width:42px; height:42px; border:3px solid rgba(255,255,255,.12); border-top-color:var(--ac); border-radius:50%; animation:spin .8s linear infinite; box-shadow:0 0 24px -6px var(--glow); }
@@ -495,6 +519,34 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
 .modsh { background:var(--bg2); border-radius:26px 26px 0 0; padding:26px 22px 38px; width:100%; max-width:460px; border:1px solid var(--bd); border-bottom:none; animation:shup .3s cubic-bezier(.34,1.56,.64,1); }
 @keyframes shup { from{transform:translateY(100%)} to{transform:translateY(0)} }
 .modh { width:38px; height:4px; background:var(--bd); border-radius:4px; margin:0 auto 18px; }
+
+/* ── MATCH DETAIL ── */
+.mchev { margin-left:auto; color:var(--mu); font-size:24px; line-height:1; padding-left:8px; }
+.mperson:active { transform:scale(.99); }
+.match-detail { background:var(--bg2); border:1px solid var(--bd); border-radius:26px; padding:30px 24px 28px; width:88%; max-width:340px; text-align:center; position:relative; box-shadow:0 24px 70px -20px var(--glow); animation:pop .28s cubic-bezier(.34,1.56,.64,1); }
+@keyframes pop { from{opacity:0;transform:scale(.9)} to{opacity:1;transform:scale(1)} }
+.md-close { position:absolute; top:14px; right:14px; width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,.06); border:1px solid var(--bd); color:var(--mu); cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center; }
+.md-close:hover { color:var(--tx); border-color:var(--ac); }
+.md-photo { width:170px; height:170px; border-radius:50%; overflow:hidden; margin:6px auto 20px; border:3px solid var(--ac); background:var(--bg3); display:flex; align-items:center; justify-content:center; box-shadow:0 0 40px -6px var(--glow); }
+.md-photo img { width:100%; height:100%; object-fit:cover; }
+.md-name { font-size:27px; font-weight:800; font-family:var(--fh); line-height:1.1; }
+.md-score { color:var(--ac); font-weight:600; font-size:15px; margin-top:7px; }
+.md-hint { color:var(--mu); font-size:14px; margin-top:16px; line-height:1.5; }
+
+/* ── GALLERY PHOTO DETAIL ── */
+.gal-exp { position:absolute; top:8px; right:8px; width:26px; height:26px; border-radius:8px; background:rgba(0,0,0,.45); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; font-size:14px; color:#fff; pointer-events:none; }
+.photo-detail { background:var(--bg2); border:1px solid var(--bd); border-radius:24px; width:90%; max-width:380px; overflow:hidden; position:relative; box-shadow:0 24px 70px -20px var(--glow); animation:pop .28s cubic-bezier(.34,1.56,.64,1); }
+.pd-media { background:#000; display:flex; align-items:center; justify-content:center; }
+.pd-media img { width:100%; max-height:56vh; object-fit:contain; display:block; }
+.pd-ph { width:100%; height:240px; display:flex; align-items:center; justify-content:center; font-size:84px; background:linear-gradient(135deg,var(--bg3),var(--card)); }
+.pd-info { padding:16px 18px 20px; }
+.pd-hero { font-weight:800; font-size:18px; font-family:var(--fh); }
+.pd-theme { color:var(--ac2); font-size:14px; font-weight:600; margin-top:3px; line-height:1.4; }
+.pd-react-lbl { font-size:11px; color:var(--mu); letter-spacing:.08em; text-transform:uppercase; font-weight:600; margin:16px 0 8px; }
+.pd-reacts { display:flex; gap:8px; }
+.pd-rbtn { flex:1; justify-content:center; gap:7px; background:rgba(255,255,255,.05); border:1px solid var(--bd); border-radius:12px; padding:12px 0; font-size:19px; }
+.pd-rbtn:hover { border-color:var(--ac); }
+.pd-rbtn .rcnt { font-size:14px; }
 
 /* STARS */
 .stars-bg { position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden; }
@@ -583,7 +635,7 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
 <div class="scr" id="s-qr">
   <h2 id="qr-title" style="font-size:30px;font-weight:800">Party</h2>
   <div class="live-dot">Your party is live</div>
-  <div class="qr-frame"><canvas id="qr-canvas" width="200" height="200"></canvas></div>
+  <div class="qr-frame"><div id="qr-canvas" style="line-height:0"></div></div>
   <button class="btn bg2 bsm" onclick="App.copyLink()">🔗 Copy Link</button>
   <div style="background:var(--card);border:1px solid var(--bd);border-radius:var(--rs);padding:9px 16px;font-size:12px;color:var(--mu)" id="eid-label">Event ID: —</div>
   <div>
@@ -631,7 +683,7 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
 
 <!-- ══════ SELFIE ══════ -->
 <div class="scr" id="s-selfie">
-  <div class="shdr" style="text-align:center"><h2>Take a Selfie 🤳</h2><p>Photo may be deleted after the event</p></div>
+  <div class="shdr" style="text-align:center"><h2>Take a Selfie 🤳</h2><p>Helps others recognize you in the room</p></div>
   <div class="selfie-area">
     <div class="selfie-ring" id="selfie-ring">
       <span class="vf-corner tl"></span><span class="vf-corner tr"></span>
@@ -640,7 +692,6 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
       <video id="selfie-vid" autoplay playsinline style="display:none"></video>
       <canvas id="selfie-cv" style="display:none"></canvas>
     </div>
-    <div class="privacy-note">🔒 Only shown to your matches. Purged when the event ends.</div>
     <div id="selfie-b1" class="selfie-btns">
       <button class="btn bp fw" onclick="App.startSelfie()">📷 Open Camera</button>
       <button class="btn bo fw" onclick="App.skipSelfie()">Skip — use initials avatar</button>
@@ -661,6 +712,7 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
   <div class="shdr" style="padding-top:54px">
     <h2>Choose Your Game</h2>
     <p>Hey <span id="g-name" style="color:var(--ac);font-weight:600">friend</span> — pick how you want to connect tonight</p>
+    <button onclick="App.forgetGuest()" style="background:none;border:none;color:var(--mu);font-size:12px;text-decoration:underline;cursor:pointer;padding:6px 0 0;font-family:var(--fb)">Not you? Switch guest</button>
   </div>
   <div class="games-body">
     <div class="game-card pink" onclick="App.startQuiz()">
@@ -732,6 +784,7 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
       <p class="theme-txt" id="h-theme">You all just won $1 million — react!</p>
       <p style="color:var(--mu);font-size:15px;line-height:1.5;margin-top:14px">You have ONE shot. Make it count.</p>
     </div>
+    <button class="vol-hint" onclick="App.replayChallenge()"><span class="vh-ico">🔊</span> Turn up your volume — tap to hear the challenge again</button>
     <p style="text-align:center;color:var(--mu);font-size:14px">Gather the crew · <span class="countdown" id="h-cd" style="font-size:22px;vertical-align:-2px">90</span>s</p>
     <div style="display:flex;flex-direction:column;gap:10px">
       <button class="btn bp fw" onclick="App.openCamera()">I'm Ready — Open Camera</button>
@@ -854,7 +907,7 @@ alter publication supabase_realtime add table photos;
   </div>
 </div>
 
-<div style="position:fixed;bottom:18px;right:14px;z-index:5000">
+<div id="setup-fab" style="position:fixed;bottom:18px;right:14px;z-index:5000">
   <button onclick="document.getElementById('setup-guide').style.display='block'" style="background:rgba(255,46,116,.13);border:1px solid rgba(255,46,116,.3);color:#ff5fa2;border-radius:50px;padding:7px 13px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif">⚙️ Setup</button>
 </div>
 
@@ -890,8 +943,8 @@ const S = {
   stream: null, photo: null,
   emoji: '🌴', vtheme: 'th-night', font: 'Plus Jakarta Sans',
   url: '',
-  galUnsub: null, gstUnsub: null,
-  lastMatches: []
+  galUnsub: null, gstUnsub: null, rally: null,
+  lastMatches: [], galPhotos: []
 };
 
 // ── Init ──────────────────────────────────────────
@@ -917,6 +970,22 @@ function genStars() {
   }
 }
 
+// Returning guest? Restore their identity from this device and skip onboarding.
+function restoreGuest(eid) {
+  const saved = lsGet('pvguest_' + eid);
+  if (saved && saved.gid && saved.name) {
+    S.gid = saved.gid;
+    S.name = saved.name;
+    S.selfie = saved.selfie_url || null;
+    document.getElementById('g-name').textContent = saved.name;
+    App.go('s-games');
+    App.subscribeRally();
+    toast(`👋 Welcome back, ${saved.name}!`);
+    return true;
+  }
+  return false;
+}
+
 async function joinEvent(eid) {
   showLoad('Loading event...');
   try {
@@ -929,11 +998,13 @@ async function joinEvent(eid) {
     document.getElementById('pb-sub').textContent = `Hosted by ${d.host_name}${d.vibe ? ' · ' + d.vibe : ''}`;
     document.getElementById('pb-welcome').textContent = d.welcome;
     hideLoad();
+    if (restoreGuest(eid)) return;
     App.go('s-join');
   } catch(e) {
     hideLoad();
     toast('Could not load event — running in demo mode');
     S.eid = eid;
+    if (restoreGuest(eid)) return;
     App.go('s-join');
   }
 }
@@ -952,17 +1023,62 @@ function showLoad(msg = 'Loading...') {
 }
 function hideLoad() { const el = document.getElementById('ldov'); if (el) el.style.display = 'none'; }
 function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 3200); }
+function bigAlert(emoji, title, sub) {
+  const el = document.createElement('div'); el.className = 'balert';
+  el.innerHTML = `<span class="bal-emoji">${emoji}</span><div><div class="bal-title">${title}</div>${sub ? `<div class="bal-sub">${sub}</div>` : ''}</div><button class="bal-x" aria-label="Dismiss" onclick="event.stopPropagation();this.closest('.balert').remove()">✕</button>`;
+  el.onclick = () => el.remove();
+  document.body.appendChild(el);
+  setTimeout(() => { if (el.parentNode) el.remove(); }, 6500);
+}
 
 function drawQR(text) {
-  const cv = document.getElementById('qr-canvas'), ctx = cv.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 200, 200);
-  const p=[[1,1,1,1,1,1,1,0,1,0,0,1,0,1,1,1,1,1,1,1,1],[1,0,0,0,0,0,1,0,1,1,0,0,1,0,1,0,0,0,0,0,1],[1,0,1,1,1,0,1,0,0,0,1,0,1,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,1,0,0,1,0,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,0,1,1,0,1,0,1,0,1,1,1,0,1],[1,0,0,0,0,0,1,0,1,0,1,1,0,0,1,0,0,0,0,0,1],[1,1,1,1,1,1,1,0,1,0,1,0,1,0,1,1,1,1,1,1,1],[0,0,0,0,0,0,0,0,1,1,0,1,1,0,0,0,0,0,0,0,0],[1,0,1,1,0,1,1,1,0,0,1,0,0,1,1,0,1,1,0,1,1],[0,1,0,1,1,0,0,0,1,1,0,1,1,0,0,1,0,1,1,0,0],[1,1,0,0,1,1,1,1,1,0,1,0,1,1,1,1,0,0,1,1,1],[0,0,1,0,0,0,0,0,1,0,1,1,0,0,0,0,1,0,0,0,0],[1,1,1,1,1,1,1,0,0,1,0,0,1,0,1,1,1,1,1,1,1],[1,0,0,0,0,0,1,0,1,0,1,1,0,0,1,0,0,0,0,0,1],[1,0,1,1,1,0,1,0,0,1,0,0,1,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,1,0,1,1,0,0,1,0,1,1,1,0,1],[1,0,1,1,1,0,1,0,0,1,1,0,1,0,1,0,1,1,1,0,1],[1,0,0,0,0,0,1,0,1,1,0,1,0,0,1,0,0,0,0,0,1],[1,1,1,1,1,1,1,0,0,0,1,0,0,0,1,1,1,1,1,1,1]];
-  const cl = 8, of = 16; ctx.fillStyle = '#11141d';
-  p.forEach((r,ri) => r.forEach((v,ci) => { if(v) ctx.fillRect(of+ci*cl,of+ri*cl,cl-1,cl-1); }));
-  ctx.fillStyle = '#ff2e74'; ctx.fillRect(88, 88, 24, 24);
-  ctx.fillStyle = '#11141d'; ctx.font = '7px monospace'; ctx.textAlign = 'center';
-  ctx.fillText(text.slice(-12), 100, 196);
+  // Render a real, scannable QR code of the event URL into the #qr-canvas container.
+  const host = document.getElementById('qr-canvas');
+  host.innerHTML = '';
+  if (!window.QRCode) {
+    host.innerHTML = '<div style="padding:42px 16px;color:#11141d;font-size:13px;text-align:center;line-height:1.5">QR couldn\'t load —<br>use the Copy Link button below</div>';
+    return;
+  }
+  try {
+    new QRCode(host, {
+      text,
+      width: 200,
+      height: 200,
+      colorDark:  '#11141d',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  } catch (e) {
+    console.warn('QR render failed:', e);
+    host.innerHTML = '<div style="padding:42px 16px;color:#11141d;font-size:13px;text-align:center;line-height:1.5">QR couldn\'t render —<br>use the Copy Link button below</div>';
+  }
 }
+
+// ── Party voice: reads the photo challenge aloud ──
+let _voices = [];
+function _loadVoices() { try { _voices = window.speechSynthesis.getVoices() || []; } catch (e) {} }
+if ('speechSynthesis' in window) { _loadVoices(); window.speechSynthesis.onvoiceschanged = _loadVoices; }
+
+function pickPartyVoice() {
+  // Prefer lively, natural English voices; fall back to any English, then anything.
+  const prefs = ['Google UK English Female', 'Samantha', 'Google US English', 'Karen', 'Moira', 'Tessa', 'Microsoft Aria Online (Natural) - English (United States)', 'Microsoft Zira'];
+  for (const name of prefs) { const v = _voices.find(x => x.name === name); if (v) return v; }
+  return _voices.find(x => /^en/i.test(x.lang)) || _voices[0] || null;
+}
+
+function speakChallenge(themeText) {
+  if (!('speechSynthesis' in window)) return;
+  try {
+    window.speechSynthesis.cancel();
+    const msg = 'Get ready to make an awesome memory! Make an expression and a pose that matches this challenge. ' + themeText;
+    const u = new SpeechSynthesisUtterance(msg);
+    u.rate = 1.0; u.pitch = 1.15; u.volume = 1;
+    const v = pickPartyVoice(); if (v) u.voice = v;
+    window.speechSynthesis.speak(u);
+  } catch (e) { console.warn('speak failed:', e); }
+}
+
+function stopSpeaking() { try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch (e) {} }
 
 // ── App Controller ─────────────────────────────────
 const App = {
@@ -970,6 +1086,9 @@ const App = {
     document.querySelectorAll('.scr').forEach(s => s.classList.remove('on'));
     document.getElementById(id).classList.add('on');
     window.scrollTo(0, 0);
+    // Setup guide is host-only — hide it on all guest-facing screens
+    const fab = document.getElementById('setup-fab');
+    if (fab) fab.style.display = ['s-splash', 's-host', 's-qr', 's-hostpanel'].includes(id) ? 'block' : 'none';
   },
 
   // ── Host setup pickers ──────────────────────────
@@ -1065,6 +1184,26 @@ const App = {
     this.go('s-selfie');
   },
 
+  forgetGuest() {
+    if (S.eid) { try { localStorage.removeItem('pvguest_' + S.eid); } catch(e) {} }
+    if (S.rally) { S.rally.unsubscribe(); S.rally = null; }
+    S.name = ''; S.selfie = null; S.gid = null;
+    const inp = document.getElementById('guest-name'); if (inp) inp.value = '';
+    this.go('s-join');
+  },
+
+  // ── In-app realtime alerts ──────────────────────
+  subscribeRally() {
+    if (S.rally || !S.eid) return;
+    S.rally = SB.rallyChannel(S.eid, p => this.showRally(p));
+  },
+
+  showRally(p) {
+    if (!p) return;
+    bigAlert(p.emoji || '📸', `${p.name || 'Someone'} is calling a group photo!`, 'Gather the crew and strike a pose! 📸');
+    try { this.playSound(); } catch(e) {}
+  },
+
   // ── Selfie ───────────────────────────────────────
   async startSelfie() {
     try {
@@ -1098,12 +1237,12 @@ const App = {
 
   async acceptSelfie() {
     if (S.stream) S.stream.getTracks().forEach(t => t.stop());
-    await this.saveGuest(); this.go('s-games');
+    await this.saveGuest(); this.subscribeRally(); this.go('s-games');
   },
 
   async skipSelfie() {
     if (S.stream) S.stream.getTracks().forEach(t => t.stop());
-    S.selfie = null; await this.saveGuest(); this.go('s-games');
+    S.selfie = null; await this.saveGuest(); this.subscribeRally(); this.go('s-games');
   },
 
   async saveGuest() {
@@ -1118,6 +1257,8 @@ const App = {
       }
       S.selfie = selfieUrl;
       await SB.upsertGuest({ id: S.gid, event_id: S.eid, name: S.name, selfie_url: selfieUrl, color });
+      // Remember this guest on their device so a return visit skips onboarding
+      lsSet('pvguest_' + S.eid, { gid: S.gid, name: S.name, selfie_url: selfieUrl, color });
     } catch(e) { console.warn('saveGuest:', e); }
     hideLoad();
   },
@@ -1156,25 +1297,47 @@ const App = {
   },
 
   renderMatches(matches) {
+    S.lastMatches = matches;
     const mg = document.getElementById('match-grid'); mg.innerHTML = '';
     if (!matches.length) {
       document.getElementById('match-sub').textContent = 'No matches yet — more people need to play!';
       document.getElementById('shared-box').style.display = 'none';
     } else {
       document.getElementById('match-sub').textContent = `${matches.length} match${matches.length!==1?'es':''} found — go find them!`;
-      matches.forEach(m => {
-        const d = document.createElement('div'); d.className = 'mperson';
+      matches.forEach((m, i) => {
+        const d = document.createElement('div'); d.className = 'mperson'; d.style.cursor = 'pointer';
         const init = (m.name || '?')[0].toUpperCase();
         const avHtml = m.selfie_url
           ? `<img src="${m.selfie_url}" style="width:100%;height:100%;object-fit:cover">`
           : `<span style="font-size:20px;font-weight:700;color:${m.color||'#ff2e74'}">${init}</span>`;
-        d.innerHTML = `<div class="mav">${avHtml}</div><div><div class="mname">${m.name}</div><div class="mscore">You both matched ${m.score}%</div></div>`;
+        d.innerHTML = `<div class="mav">${avHtml}</div><div><div class="mname">${m.name}</div><div class="mscore">You both matched ${m.score}%</div></div><span class="mchev">›</span>`;
+        d.onclick = () => this.showMatch(i);
         mg.appendChild(d);
       });
       document.getElementById('shared-box').style.display = 'block';
       document.getElementById('shared-ans').innerHTML = S.qa.map((a,i) => `<div>${QUESTIONS[i].opts[a].e} ${QUESTIONS[i].opts[a].t}</div>`).join('');
     }
     this.playSound(); this.confetti(); this.go('s-match');
+  },
+
+  showMatch(i) {
+    const m = (S.lastMatches || [])[i];
+    if (!m) return;
+    const init = (m.name || '?')[0].toUpperCase();
+    const photo = m.selfie_url
+      ? `<img src="${m.selfie_url}" alt="${m.name}">`
+      : `<span style="font-size:66px;font-weight:800;color:${m.color||'#ff2e74'}">${init}</span>`;
+    const mo = document.createElement('div'); mo.className = 'modov';
+    mo.style.alignItems = 'center';
+    mo.innerHTML = `<div class="match-detail">
+      <button class="md-close" aria-label="Close" onclick="this.closest('.modov').remove()">✕</button>
+      <div class="md-photo">${photo}</div>
+      <h3 class="md-name">${m.name}</h3>
+      <div class="md-score">You both matched ${m.score}%</div>
+      <p class="md-hint">Go find them in the room and say hi! 👋</p>
+    </div>`;
+    mo.addEventListener('click', e => { if (e.target === mo) mo.remove(); });
+    document.body.appendChild(mo);
   },
 
   playSound() {
@@ -1210,7 +1373,11 @@ const App = {
     document.getElementById('h-cd').classList.remove('urgent');
     this.go('s-hero'); this.startTimer();
     toast(`${S.theme.e} ${S.name || 'Someone'} is calling a group photo!`);
+    speakChallenge(S.theme.t);
+    if (S.rally) S.rally.send({ name: S.name, emoji: S.theme.e, theme: S.theme.t });
   },
+
+  replayChallenge() { speakChallenge((S.theme || THEMES[0]).t); },
 
   renderTheme() {
     S.theme = THEMES[S.hti];
@@ -1234,13 +1401,14 @@ const App = {
     document.getElementById('h-cd').textContent = '90';
     document.getElementById('h-cd').classList.remove('urgent');
     this.startTimer(); toast(`${S.theme.e} New theme!`);
+    speakChallenge(S.theme.t);
   },
 
-  cancelHero() { clearInterval(S.htimer); this.go('s-games'); },
+  cancelHero() { clearInterval(S.htimer); stopSpeaking(); this.go('s-games'); },
 
   // ── Camera ───────────────────────────────────────
   async openCamera() {
-    clearInterval(S.htimer);
+    clearInterval(S.htimer); stopSpeaking();
     const th = S.theme || THEMES[0];
     document.getElementById('cam-badge').textContent = `${th.e} ${th.t}`;
     document.getElementById('cam-vid').style.display = 'block';
@@ -1251,7 +1419,11 @@ const App = {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } });
       S.stream = s; document.getElementById('cam-vid').srcObject = s;
-    } catch(e) { toast('Camera unavailable'); await this.saveSimPhoto(); }
+    } catch(e) {
+      console.warn('Camera error:', e);
+      toast("📷 Couldn't access the camera — please allow camera access and try again");
+      this.go('s-hero');
+    }
   },
 
   takePhoto() {
@@ -1306,29 +1478,59 @@ const App = {
   },
 
   renderGallery(photos) {
+    S.galPhotos = photos;
     const grid = document.getElementById('gal-grid');
     document.getElementById('gal-count').textContent = `${photos.length} ${photos.length!==1?'memories':'memory'}`;
     if (!photos.length) { grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--mu)">No photos yet — be the first Memory Hero! 📸</div>'; return; }
     grid.innerHTML = '';
     photos.forEach(item => {
-      const el = document.createElement('div'); el.className = 'gal-item';
+      const el = document.createElement('div'); el.className = 'gal-item'; el.style.cursor = 'pointer';
       const pid = item.id;
       const r = item.reactions || { heart:0, fire:0, laugh:0, wow:0 };
       const imgH = item.photo_url ? `<img src="${item.photo_url}" alt="Memory" loading="lazy" onerror="this.style.display='none'">` : '';
       const ph = `<div class="gal-ph" ${item.photo_url?'style="display:none"':''}>${item.emoji||'📸'}</div>`;
       el.innerHTML = `${imgH}${ph}
+        <div class="gal-exp">⤢</div>
         <div class="gal-cap">
           <div class="gal-hero">📸 ${item.hero_name}</div>
           <div class="gal-theme">${item.theme}</div>
         </div>
-        <div class="reacts">
+        <div class="reacts" onclick="event.stopPropagation()">
           <button class="rbtn" onclick="App.react('${pid}','heart')">❤️<span class="rcnt">${r.heart||0}</span></button>
           <button class="rbtn" onclick="App.react('${pid}','fire')">🔥<span class="rcnt">${r.fire||0}</span></button>
           <button class="rbtn" onclick="App.react('${pid}','laugh')">😂<span class="rcnt">${r.laugh||0}</span></button>
           <button class="rbtn" onclick="App.react('${pid}','wow')">🤩<span class="rcnt">${r.wow||0}</span></button>
         </div>`;
+      el.onclick = () => this.showPhoto(pid);
       grid.appendChild(el);
     });
+  },
+
+  showPhoto(pid) {
+    const p = (S.galPhotos || []).find(x => x.id === pid);
+    if (!p) return;
+    const r = p.reactions || { heart:0, fire:0, laugh:0, wow:0 };
+    const media = p.photo_url
+      ? `<img src="${p.photo_url}" alt="Memory">`
+      : `<div class="pd-ph">${p.emoji||'📸'}</div>`;
+    const mo = document.createElement('div'); mo.className = 'modov'; mo.style.alignItems = 'center';
+    mo.innerHTML = `<div class="photo-detail">
+      <button class="md-close" aria-label="Close" onclick="this.closest('.modov').remove()">✕</button>
+      <div class="pd-media">${media}</div>
+      <div class="pd-info">
+        <div class="pd-hero">📸 ${p.hero_name}</div>
+        <div class="pd-theme">${p.theme}</div>
+        <div class="pd-react-lbl">Tap to react</div>
+        <div class="pd-reacts">
+          <button class="rbtn pd-rbtn" onclick="App.react('${pid}','heart')">❤️<span class="rcnt">${r.heart||0}</span></button>
+          <button class="rbtn pd-rbtn" onclick="App.react('${pid}','fire')">🔥<span class="rcnt">${r.fire||0}</span></button>
+          <button class="rbtn pd-rbtn" onclick="App.react('${pid}','laugh')">😂<span class="rcnt">${r.laugh||0}</span></button>
+          <button class="rbtn pd-rbtn" onclick="App.react('${pid}','wow')">🤩<span class="rcnt">${r.wow||0}</span></button>
+        </div>
+      </div>
+    </div>`;
+    mo.addEventListener('click', e => { if (e.target === mo) mo.remove(); });
+    document.body.appendChild(mo);
   },
 
   async react(pid, type) {
