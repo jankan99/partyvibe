@@ -768,7 +768,7 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
     <button onclick="App.forgetGuest()" style="background:none;border:none;color:var(--mu);font-size:12px;text-decoration:underline;cursor:pointer;padding:6px 0 0;font-family:var(--fb)">Not you? Switch guest</button>
   </div>
   <div class="games-body">
-    <div class="game-card pink" onclick="App.startQuiz()">
+    <div class="game-card pink" onclick="App.openQuiz()">
       <h3>Find Your People</h3>
       <p>4 quick questions. Meet guests who think like you.</p>
       <span class="game-cta">Play Quiz →</span>
@@ -788,7 +788,7 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
   <div class="navb">
     <button class="nitem on" onclick="App.go('s-games')"><span class="nico">🎮</span><span class="nlbl">Games</span></button>
     <button class="nitem" onclick="App.go('s-gallery');App.listenGallery()"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
-    <button class="nitem" onclick="App.go('s-match')"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
+    <button class="nitem" onclick="App.openQuiz()"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
   </div>
 </div>
 
@@ -880,7 +880,7 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
   <div class="navb">
     <button class="nitem" onclick="App.go('s-games')"><span class="nico">🎮</span><span class="nlbl">Games</span></button>
     <button class="nitem on"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
-    <button class="nitem" onclick="App.go('s-match')"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
+    <button class="nitem" onclick="App.openQuiz()"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
   </div>
 </div>
 
@@ -918,7 +918,10 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
   </div>
   <div class="secret-rule">💡 Instead of "Have you broken a bone?", try "Done anything adventurous lately?"</div>
   <div class="secret-list" id="secret-list"></div>
-  <div class="bbar"><button class="btn bg2 fw" onclick="App.refreshSecrets()">🔄 Refresh list</button></div>
+  <div class="bbar">
+    <button class="btn bg2 fw" onclick="App.refreshSecrets()">🔄 Refresh list</button>
+    <button class="btn bo fw" onclick="App.editSecret()">✏️ Edit my secret</button>
+  </div>
 </div>
 
 <!-- ══════ SETUP GUIDE ══════ -->
@@ -1282,9 +1285,13 @@ const App = {
   },
 
   forgetGuest() {
-    if (S.eid) { try { localStorage.removeItem('pvguest_' + S.eid); } catch(e) {} }
+    if (S.eid) {
+      ['pvguest_', 'pvquiz_', 'pvsecret_', 'found_'].forEach(p => {
+        try { localStorage.removeItem(p + S.eid); } catch(e) {}
+      });
+    }
     if (S.rally) { S.rally.unsubscribe(); S.rally = null; }
-    S.name = ''; S.selfie = null; S.gid = null;
+    S.name = ''; S.selfie = null; S.gid = null; S.qa = []; S.mySecret = '';
     const inp = document.getElementById('guest-name'); if (inp) inp.value = '';
     this.go('s-join');
   },
@@ -1303,9 +1310,16 @@ const App = {
 
   // ── Find This Person ────────────────────────────
   startFindPerson() {
+    // Already shared a secret? Skip entry and go straight to the hunt.
+    if (!S.mySecret) { const saved = lsGet('pvsecret_' + S.eid); if (saved) S.mySecret = saved; }
+    if (S.mySecret) { this.go('s-findlist'); this.listenSecrets(); return; }
+    this.editSecret();
+  },
+
+  editSecret() {
     this.go('s-secret');
     const inp = document.getElementById('secret-input');
-    if (inp && S.mySecret) inp.value = S.mySecret;
+    if (inp) inp.value = S.mySecret || '';
   },
 
   fillSecret(text) {
@@ -1318,6 +1332,7 @@ const App = {
     if (!fact) { toast('Share one unique thing first!'); return; }
     if (!S.gid) { toast('Join the party first 🎉'); return; }
     S.mySecret = fact;
+    lsSet('pvsecret_' + S.eid, fact);   // remember so a return visit skips entry
     showLoad('Hiding your secret...');
     try {
       await SB.upsertSecret({ event_id: S.eid, guest_id: S.gid, name: S.name, fact });
@@ -1426,6 +1441,14 @@ const App = {
   // ── Quiz ─────────────────────────────────────────
   startQuiz() { S.qa = []; S.qi = 0; this.renderQ(); this.go('s-quiz'); },
 
+  // Entry from the games card / Matches nav: if they've already played,
+  // jump straight to their results instead of restarting the quiz.
+  openQuiz() {
+    const saved = (S.qa && S.qa.length === 4) ? S.qa : lsGet('pvquiz_' + S.eid);
+    if (saved && saved.length === 4) { S.qa = saved; this.findMatches(false); }
+    else { this.startQuiz(); }
+  },
+
   renderQ() {
     const q = QUESTIONS[S.qi];
     document.getElementById('q-num').textContent = S.qi + 1;
@@ -1444,19 +1467,20 @@ const App = {
 
   qNext() { if (S.qi < 3) { S.qi++; this.renderQ(); } else this.findMatches(); },
 
-  async findMatches() {
-    showLoad('Finding your matches...');
+  async findMatches(celebrate = true) {
+    showLoad(celebrate ? 'Finding your matches...' : 'Loading your matches...');
     try {
       await SB.upsertQuiz({ id: uid(), event_id: S.eid, guest_id: S.gid, answers: S.qa });
+      lsSet('pvquiz_' + S.eid, S.qa);   // remember answers so we can show results later
       const matches = await SB.getMatches(S.eid, S.qa, S.gid);
-      S.lastMatches = matches; hideLoad(); this.renderMatches(matches);
+      S.lastMatches = matches; hideLoad(); this.renderMatches(matches, celebrate);
     } catch(e) {
       hideLoad();
-      this.renderMatches([{ name:'Alex', selfie_url:null, color:'#ff2e74', score:87 }, { name:'Jordan', selfie_url:null, color:'#ff5fa2', score:75 }]);
+      this.renderMatches([{ name:'Alex', selfie_url:null, color:'#ff2e74', score:87 }, { name:'Jordan', selfie_url:null, color:'#ff5fa2', score:75 }], celebrate);
     }
   },
 
-  renderMatches(matches) {
+  renderMatches(matches, celebrate = true) {
     S.lastMatches = matches;
     const mg = document.getElementById('match-grid'); mg.innerHTML = '';
     if (!matches.length) {
@@ -1477,7 +1501,8 @@ const App = {
       document.getElementById('shared-box').style.display = 'block';
       document.getElementById('shared-ans').innerHTML = S.qa.map((a,i) => `<div>${QUESTIONS[i].opts[a].e} ${QUESTIONS[i].opts[a].t}</div>`).join('');
     }
-    this.playSound(); this.confetti(); this.go('s-match');
+    if (celebrate) { this.playSound(); this.confetti(); }
+    this.go('s-match');
   },
 
   showMatch(i) {
