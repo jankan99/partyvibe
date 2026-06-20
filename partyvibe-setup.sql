@@ -70,6 +70,22 @@ create table if not exists photos (
 create index if not exists photos_event_id_idx on photos(event_id);
 
 
+-- ── 4b. SECRETS ──────────────────────────────────
+-- "Find This Person" game: each guest's secret fun fact.
+-- Others see the facts anonymously and figure out who's who.
+create table if not exists secrets (
+  id              text primary key default gen_random_uuid()::text,
+  event_id        text not null references events(id) on delete cascade,
+  guest_id        text not null references guests(id) on delete cascade,
+  name            text not null,
+  fact            text not null,
+  created_at      timestamptz default now(),
+  unique(event_id, guest_id)   -- one secret per guest per event
+);
+
+create index if not exists secrets_event_id_idx on secrets(event_id);
+
+
 -- ── 5. REACTION INCREMENT FUNCTION ───────────────
 -- Atomically increments a single reaction counter.
 -- Called via supabase.rpc('increment_reaction', {...})
@@ -97,6 +113,7 @@ $$;
 -- join or photos are added — no polling needed.
 alter publication supabase_realtime add table guests;
 alter publication supabase_realtime add table photos;
+alter publication supabase_realtime add table secrets;
 
 
 -- ── 7. ROW LEVEL SECURITY ────────────────────────
@@ -106,6 +123,7 @@ alter table events       enable row level security;
 alter table guests       enable row level security;
 alter table quiz_answers enable row level security;
 alter table photos       enable row level security;
+alter table secrets      enable row level security;
 
 -- Allow all reads and writes for now (party app, no auth required)
 create policy "Public read events"        on events       for select using (true);
@@ -123,6 +141,10 @@ create policy "Public upsert quiz"        on quiz_answers for update using (true
 create policy "Public read photos"        on photos       for select using (true);
 create policy "Public insert photos"      on photos       for insert with check (true);
 create policy "Public update photos"      on photos       for update using (true);
+
+create policy "Public read secrets"       on secrets      for select using (true);
+create policy "Public insert secrets"     on secrets      for insert with check (true);
+create policy "Public update secrets"     on secrets      for update using (true);
 
 
 -- ── 8. STORAGE BUCKET ────────────────────────────
