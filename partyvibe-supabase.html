@@ -189,6 +189,38 @@ const SB = {
     return { unsubscribe: () => _sb.removeChannel(ch) };
   },
 
+  // ── Secrets (Find This Person game) ──────────
+  async upsertSecret(data) {
+    if (!LIVE) {
+      const all = lsGet('secrets_' + data.event_id) || {};
+      all[data.guest_id] = data;
+      lsSet('secrets_' + data.event_id, all);
+      return data;
+    }
+    const { error } = await _sb.from('secrets').upsert(data, { onConflict: 'event_id,guest_id' });
+    if (error) throw error;
+    return data;
+  },
+
+  async getSecrets(eventId) {
+    if (!LIVE) return Object.values(lsGet('secrets_' + eventId) || {});
+    const { data } = await _sb.from('secrets').select('*').eq('event_id', eventId).order('created_at');
+    return data || [];
+  },
+
+  listenSecrets(eventId, cb) {
+    if (!LIVE) {
+      cb(Object.values(lsGet('secrets_' + eventId) || {}));
+      return { unsubscribe: () => {} };
+    }
+    const ch = _sb.channel('secrets_' + eventId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'secrets', filter: `event_id=eq.${eventId}` },
+        async () => { const secs = await this.getSecrets(eventId); cb(secs); })
+      .subscribe();
+    this.getSecrets(eventId).then(cb);
+    return { unsubscribe: () => _sb.removeChannel(ch) };
+  },
+
   async react(photoId, type) {
     if (!LIVE) {
       // Update demo data locally
@@ -399,13 +431,32 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
 .game-card.pink:hover { box-shadow:0 0 40px -12px var(--glow); }
 .game-card.gold { border-color:rgba(255,194,75,.5); box-shadow:0 0 30px -16px rgba(255,194,75,.4); }
 .game-card.gold:hover { box-shadow:0 0 40px -12px rgba(255,194,75,.45); }
+.game-card.blue { border-color:rgba(91,140,255,.5); box-shadow:0 0 30px -16px rgba(91,140,255,.4); }
+.game-card.blue:hover { box-shadow:0 0 40px -12px rgba(91,140,255,.45); }
 .game-card h3 { font-size:22px; font-weight:800; }
 .game-card.pink h3 { color:var(--ac); }
 .game-card.gold h3 { color:var(--gold); }
+.game-card.blue h3 { color:var(--ac3); }
 .game-card p { color:var(--mu); font-size:14px; line-height:1.5; }
 .game-cta { margin-top:6px; align-self:flex-start; display:inline-flex; align-items:center; gap:6px; padding:11px 20px; border-radius:12px; font-family:var(--fh); font-weight:700; font-size:14px; }
 .game-card.pink .game-cta { background:linear-gradient(135deg,var(--ac),var(--ac2)); color:#fff; box-shadow:0 6px 20px -8px var(--glow); }
 .game-card.gold .game-cta { background:linear-gradient(135deg,var(--gold),#ff9a3c); color:#1a1000; }
+.game-card.blue .game-cta { background:linear-gradient(135deg,var(--ac3),#7fb0ff); color:#001029; }
+
+/* ── FIND THIS PERSON ── */
+.secret-ex { display:flex; flex-direction:column; gap:8px; }
+.secret-chip { padding:11px 14px; border-radius:13px; border:1px solid var(--bd); background:var(--card); color:var(--mu); font-size:13px; cursor:pointer; transition:all .2s; line-height:1.35; text-align:left; font-family:var(--fb); }
+.secret-chip:hover { border-color:var(--ac3); color:var(--tx); }
+.secret-chip:active { transform:scale(.99); }
+.secret-rule { margin:0 22px; background:rgba(91,140,255,.08); border:1px solid rgba(91,140,255,.22); color:var(--ac3); border-radius:14px; padding:12px 14px; font-size:13px; line-height:1.45; }
+.secret-list { padding:16px 22px; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:11px; }
+.secret-card { background:var(--card); border:1px solid var(--bd); border-radius:var(--r); padding:16px 18px; cursor:pointer; transition:transform .15s,border-color .2s; }
+.secret-card:active { transform:scale(.99); }
+.secret-fact { font-size:16px; font-weight:600; line-height:1.4; }
+.secret-meta { font-size:12px; color:var(--mu); margin-top:8px; }
+.secret-card.done { border-color:rgba(62,207,142,.45); }
+.secret-card.done .secret-fact { color:var(--mu); text-decoration:line-through; }
+.secret-card.done .secret-meta { color:#3ecf8e; font-weight:600; }
 
 /* ── QUIZ ── */
 .quiz-hdr { padding:54px 22px 16px; }
@@ -727,6 +778,11 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
       <p>Get a challenge. Take one shot. Go famous.</p>
       <span class="game-cta">Play →</span>
     </div>
+    <div class="game-card blue" onclick="App.startFindPerson()">
+      <h3>Find This Person 🕵️</h3>
+      <p>Share a secret about yourself. Then hunt down who's who — without asking directly!</p>
+      <span class="game-cta">Play →</span>
+    </div>
     <button class="btn bg2 fw" onclick="App.go('s-gallery');App.listenGallery()">🖼️ View Party Gallery</button>
   </div>
   <div class="navb">
@@ -826,6 +882,43 @@ label { font-size:11px; color:var(--mu); margin-bottom:7px; display:block; lette
     <button class="nitem on"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
     <button class="nitem" onclick="App.go('s-match')"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
   </div>
+</div>
+
+<!-- ══════ FIND THIS PERSON — secret entry ══════ -->
+<div class="scr" id="s-secret">
+  <div class="shdr">
+    <button class="bkbtn" onclick="App.go('s-games')">← Back</button>
+    <h2>Find This Person 🕵️</h2>
+    <p>Tell us one thing unique about you. It stays a <strong style="color:var(--ac3)">secret</strong> — others have to figure out it's you.</p>
+  </div>
+  <div class="fmbody">
+    <div class="fi">
+      <label>Your secret fact</label>
+      <textarea id="secret-input" rows="3" maxlength="140" placeholder="e.g. I've broken a bone on 3 different continents"></textarea>
+    </div>
+    <p style="font-size:11px;color:var(--mu);letter-spacing:.06em;text-transform:uppercase;font-weight:600;margin-bottom:10px">Need inspiration? Tap one</p>
+    <div class="secret-ex">
+      <button class="secret-chip" onclick="App.fillSecret(this.textContent)">I've broken a bone on 3 different continents</button>
+      <button class="secret-chip" onclick="App.fillSecret(this.textContent)">I can solve a Rubik's cube in under a minute</button>
+      <button class="secret-chip" onclick="App.fillSecret(this.textContent)">I once got stuck in an elevator with a celebrity</button>
+      <button class="secret-chip" onclick="App.fillSecret(this.textContent)">I've eaten fried crickets</button>
+      <button class="secret-chip" onclick="App.fillSecret(this.textContent)">I have a secret talent for accents</button>
+      <button class="secret-chip" onclick="App.fillSecret(this.textContent)">I share a birthday with someone famous</button>
+    </div>
+  </div>
+  <div class="bbar"><button class="btn bp fw" onclick="App.submitSecret()">Start the hunt →</button></div>
+</div>
+
+<!-- ══════ FIND THIS PERSON — the hunt ══════ -->
+<div class="scr" id="s-findlist">
+  <div class="shdr">
+    <button class="bkbtn" onclick="App.go('s-games')">← Back</button>
+    <h2>Who's Who? 🔍</h2>
+    <p>Mingle and work out who each secret belongs to. <strong style="color:var(--ac3)">No asking directly</strong> — ask around it!</p>
+  </div>
+  <div class="secret-rule">💡 Instead of "Have you broken a bone?", try "Done anything adventurous lately?"</div>
+  <div class="secret-list" id="secret-list"></div>
+  <div class="bbar"><button class="btn bg2 fw" onclick="App.refreshSecrets()">🔄 Refresh list</button></div>
 </div>
 
 <!-- ══════ SETUP GUIDE ══════ -->
@@ -945,8 +1038,9 @@ const S = {
   stream: null, photo: null,
   emoji: '🌴', vtheme: 'th-night', font: 'Plus Jakarta Sans',
   url: '',
-  galUnsub: null, gstUnsub: null, rally: null,
-  lastMatches: [], galPhotos: []
+  galUnsub: null, gstUnsub: null, rally: null, secUnsub: null,
+  lastMatches: [], galPhotos: [],
+  mySecret: '', lastSecrets: []
 };
 
 // ── Init ──────────────────────────────────────────
@@ -1025,6 +1119,7 @@ function showLoad(msg = 'Loading...') {
 }
 function hideLoad() { const el = document.getElementById('ldov'); if (el) el.style.display = 'none'; }
 function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 3200); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 function bigAlert(emoji, title, sub) {
   const el = document.createElement('div'); el.className = 'balert';
   el.innerHTML = `<span class="bal-emoji">${emoji}</span><div><div class="bal-title">${title}</div>${sub ? `<div class="bal-sub">${sub}</div>` : ''}</div><button class="bal-x" aria-label="Dismiss" onclick="event.stopPropagation();this.closest('.balert').remove()">✕</button>`;
@@ -1204,6 +1299,69 @@ const App = {
     if (!p) return;
     bigAlert(p.emoji || '📸', `${p.name || 'Someone'} is calling a group photo!`, 'Gather the crew and strike a pose! 📸');
     try { this.playSound(); } catch(e) {}
+  },
+
+  // ── Find This Person ────────────────────────────
+  startFindPerson() {
+    this.go('s-secret');
+    const inp = document.getElementById('secret-input');
+    if (inp && S.mySecret) inp.value = S.mySecret;
+  },
+
+  fillSecret(text) {
+    const inp = document.getElementById('secret-input');
+    if (inp) { inp.value = text; inp.focus(); }
+  },
+
+  async submitSecret() {
+    const fact = (document.getElementById('secret-input').value || '').trim();
+    if (!fact) { toast('Share one unique thing first!'); return; }
+    if (!S.gid) { toast('Join the party first 🎉'); return; }
+    S.mySecret = fact;
+    showLoad('Hiding your secret...');
+    try {
+      await SB.upsertSecret({ event_id: S.eid, guest_id: S.gid, name: S.name, fact });
+    } catch(e) {
+      console.warn('submitSecret:', e);
+      toast("Couldn't save your secret — the game table may need setup");
+    }
+    hideLoad();
+    this.go('s-findlist');
+    this.listenSecrets();
+  },
+
+  listenSecrets() {
+    if (S.secUnsub) S.secUnsub.unsubscribe();
+    S.secUnsub = SB.listenSecrets(S.eid || 'demo', secs => this.renderSecrets(secs));
+  },
+
+  refreshSecrets() { this.listenSecrets(); toast('🔄 Refreshed'); },
+
+  renderSecrets(secrets) {
+    S.lastSecrets = secrets || [];
+    const list = document.getElementById('secret-list');
+    const others = S.lastSecrets.filter(s => s.guest_id !== S.gid);
+    if (!others.length) {
+      list.innerHTML = '<div style="text-align:center;padding:46px 20px;color:var(--mu);line-height:1.6">No other secrets yet 🕵️<br>Check back as more guests join the hunt!</div>';
+      return;
+    }
+    const found = lsGet('found_' + S.eid) || {};
+    list.innerHTML = '';
+    others.forEach(s => {
+      const el = document.createElement('div');
+      el.className = 'secret-card' + (found[s.guest_id] ? ' done' : '');
+      el.innerHTML = `<div class="secret-fact">"${esc(s.fact)}"</div>
+        <div class="secret-meta">${found[s.guest_id] ? '✓ Found them!' : '👆 Tap when you figure out who this is'}</div>`;
+      el.onclick = () => this.toggleFound(s.guest_id);
+      list.appendChild(el);
+    });
+  },
+
+  toggleFound(gid) {
+    const found = lsGet('found_' + S.eid) || {};
+    found[gid] = !found[gid];
+    lsSet('found_' + S.eid, found);
+    this.renderSecrets(S.lastSecrets);
   },
 
   // ── Selfie ───────────────────────────────────────
