@@ -519,6 +519,13 @@ label { font-size:12px; color:var(--mu); margin-bottom:7px; display:block; lette
 .gal-hdr .bkbtn { color:rgba(255,255,255,.85); }
 .gal-hdr #gal-count { color:rgba(255,255,255,.85)!important; }
 .gal-grid { padding:13px; display:grid; grid-template-columns:1fr 1fr; gap:11px; align-content:start; flex:1; overflow-y:auto; }
+
+/* ── WHO'S HERE (guest directory) ── */
+.people-grid { padding:18px 16px; display:grid; grid-template-columns:repeat(3,1fr); gap:18px 10px; align-content:start; flex:1; overflow-y:auto; }
+.person { display:flex; flex-direction:column; align-items:center; gap:9px; }
+.pav { position:relative; width:84px; height:84px; border-radius:50%; border:2.5px solid var(--bd); display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:800; box-shadow:0 4px 16px -6px rgba(0,0,0,.5); overflow:hidden; }
+.pav-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.pname { font-size:14px; font-weight:600; text-align:center; line-height:1.2; max-width:100px; word-break:break-word; }
 .gal-item { position:relative; border-radius:var(--r); overflow:hidden; background:var(--card); border:1px solid var(--bd); }
 .gal-item img { width:100%; height:170px; object-fit:cover; display:block; }
 .gal-ph { width:100%; height:170px; display:flex; align-items:center; justify-content:center; font-size:46px; background:linear-gradient(135deg,var(--bg3),var(--card)); }
@@ -787,6 +794,7 @@ label { font-size:12px; color:var(--mu); margin-bottom:7px; display:block; lette
   </div>
   <div class="navb">
     <button class="nitem on" onclick="App.go('s-games')"><span class="nico">🎮</span><span class="nlbl">Games</span></button>
+    <button class="nitem" onclick="App.openPeople()"><span class="nico">👋</span><span class="nlbl">Guests</span></button>
     <button class="nitem" onclick="App.go('s-gallery');App.listenGallery()"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
     <button class="nitem" onclick="App.openQuiz()"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
   </div>
@@ -879,7 +887,24 @@ label { font-size:12px; color:var(--mu); margin-bottom:7px; display:block; lette
   <div class="gal-grid" id="gal-grid"><div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--mu)">No photos yet — be the first Memory Hero! 📸</div></div>
   <div class="navb">
     <button class="nitem" onclick="App.go('s-games')"><span class="nico">🎮</span><span class="nlbl">Games</span></button>
+    <button class="nitem" onclick="App.openPeople()"><span class="nico">👋</span><span class="nlbl">Guests</span></button>
     <button class="nitem on"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
+    <button class="nitem" onclick="App.openQuiz()"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
+  </div>
+</div>
+
+<!-- ══════ WHO'S HERE (guest directory) ══════ -->
+<div class="scr" id="s-guests">
+  <div class="shdr">
+    <button class="bkbtn" onclick="App.go('s-games')">← Back</button>
+    <h2>Who's Here 👋</h2>
+    <p id="guests-count">Everyone at the party</p>
+  </div>
+  <div class="people-grid" id="people-grid"><div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--mu)">No one's joined yet</div></div>
+  <div class="navb">
+    <button class="nitem" onclick="App.go('s-games')"><span class="nico">🎮</span><span class="nlbl">Games</span></button>
+    <button class="nitem on"><span class="nico">👋</span><span class="nlbl">Guests</span></button>
+    <button class="nitem" onclick="App.go('s-gallery');App.listenGallery()"><span class="nico">📸</span><span class="nlbl">Gallery</span></button>
     <button class="nitem" onclick="App.openQuiz()"><span class="nico">💜</span><span class="nlbl">Matches</span></button>
   </div>
 </div>
@@ -1041,7 +1066,7 @@ const S = {
   stream: null, photo: null,
   emoji: '🌴', vtheme: 'th-night', font: 'Plus Jakarta Sans',
   url: '',
-  galUnsub: null, gstUnsub: null, rally: null, secUnsub: null,
+  galUnsub: null, gstUnsub: null, rally: null, secUnsub: null, pplUnsub: null,
   lastMatches: [], galPhotos: [],
   mySecret: '', lastSecrets: []
 };
@@ -1686,6 +1711,33 @@ const App = {
   listenGallery() {
     if (S.galUnsub) S.galUnsub.unsubscribe();
     S.galUnsub = SB.listenPhotos(S.eid || 'demo', photos => this.renderGallery(photos));
+  },
+
+  // ── Who's Here (guest directory) ────────────────
+  openPeople() {
+    this.go('s-guests');
+    if (S.pplUnsub) S.pplUnsub.unsubscribe();
+    S.pplUnsub = SB.listenGuests(S.eid || 'demo', guests => this.renderPeople(guests));
+  },
+
+  renderPeople(guests) {
+    const grid = document.getElementById('people-grid');
+    document.getElementById('guests-count').textContent =
+      guests.length ? `${guests.length} guest${guests.length !== 1 ? 's' : ''} at the party` : 'Everyone at the party';
+    if (!guests.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:46px 20px;color:var(--mu);line-height:1.6">No one\'s joined yet 👋<br>Photos appear here as guests arrive.</div>';
+      return;
+    }
+    grid.innerHTML = '';
+    guests.forEach(g => {
+      const el = document.createElement('div'); el.className = 'person';
+      const color = g.color || '#ff2e74';
+      const initial = esc((g.name || '?')[0].toUpperCase());
+      // Initial sits underneath; the selfie covers it, and removes itself on load failure.
+      const img = g.selfie_url ? `<img class="pav-img" src="${esc(g.selfie_url)}" alt="" loading="lazy" onerror="this.remove()">` : '';
+      el.innerHTML = `<div class="pav" style="color:${color};background:${color}22">${initial}${img}</div><div class="pname">${esc(g.name)}</div>`;
+      grid.appendChild(el);
+    });
   },
 
   renderGallery(photos) {
